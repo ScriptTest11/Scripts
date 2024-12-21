@@ -1,0 +1,47 @@
+# Expected headers
+$expectedHeaders = @('fname', 'lastname', 'email')
+
+# Function to compare headers
+function Compare-CSVHeaders {
+    param (
+        [Parameter(Mandatory=$true)]
+        [string]$csvPath
+    )
+
+    try {
+        # Read the first line of the CSV file to get headers
+        $actualHeaders = (Get-Content $csvPath -First 1) | ConvertFrom-Csv | Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty Name
+
+        # Compare headers
+        $missingHeaders = $expectedHeaders | Where-Object { $_ -notin $actualHeaders }
+        $extraHeaders = $actualHeaders | Where-Object { $_ -notin $expectedHeaders }
+
+        # Output results
+        Write-Host "Header Comparison Results:" -ForegroundColor Cyan
+        Write-Host "------------------------"
+        
+        if ($missingHeaders.Count -eq 0 -and $extraHeaders.Count -eq 0) {
+            Write-Host "✓ Headers match exactly!" -ForegroundColor Green
+        } else {
+            if ($missingHeaders) {
+                Write-Host "Missing Headers:" -ForegroundColor Red
+                $missingHeaders | ForEach-Object { Write-Host "- $_" }
+            }
+            if ($extraHeaders) {
+                Write-Host "Extra Headers:" -ForegroundColor Yellow
+                $extraHeaders | ForEach-Object { Write-Host "- $_" }
+            }
+        }
+
+        # Display actual headers found
+        Write-Host "`nActual Headers in File:" -ForegroundColor Cyan
+        $actualHeaders | ForEach-Object { Write-Host "- $_" }
+    }
+    catch {
+        Write-Host "Error: $_" -ForegroundColor Red
+    }
+}
+
+# Replace 'PATH_TO_YOUR_CSV' with your actual CSV file path
+$csvPath = "PATH_TO_YOUR_CSV"
+Compare-CSVHeaders -csvPath $csvPath
