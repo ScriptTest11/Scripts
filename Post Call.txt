@@ -1,25 +1,36 @@
-# API Authentication and Request Parameters
+# Authentication Parameters
 $clientId = "YOUR_CLIENT_ID"
 $clientSecret = "YOUR_CLIENT_SECRET"
+$tokenUrl = "YOUR_TOKEN_ENDPOINT"
 $apiUrl = "YOUR_API_ENDPOINT"
 
-# Request body
-$body = @{
+# Request body for the API call
+$apiBody = @{
     name = "John"
     lastName = "Doe"
     phone = "+1234567890"
 } | ConvertTo-Json
 
-# Create authentication header
-$auth = [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("${clientId}:${clientSecret}"))
-$headers = @{
-    Authorization = "Basic $auth"
-    'Content-Type' = 'application/json'
-}
-
 try {
-    # Make the API call
-    $response = Invoke-RestMethod -Uri $apiUrl -Method Post -Headers $headers -Body $body
+    # First, get the access token
+    $tokenBody = @{
+        grant_type = "client_credentials"
+        client_id = $clientId
+        client_secret = $clientSecret
+    }
+
+    # Get access token
+    $tokenResponse = Invoke-RestMethod -Uri $tokenUrl -Method Post -Body $tokenBody -ContentType "application/x-www-form-urlencoded"
+    $accessToken = $tokenResponse.access_token
+
+    # Create headers with the access token
+    $headers = @{
+        Authorization = "Bearer $accessToken"
+        'Content-Type' = 'application/json'
+    }
+
+    # Make the API call with the access token
+    $response = Invoke-RestMethod -Uri $apiUrl -Method Post -Headers $headers -Body $apiBody
 
     # Handle the response
     Write-Host "API call successful!"
@@ -28,8 +39,13 @@ try {
 }
 catch {
     # Error handling
-    Write-Host "Error making API call:"
+    Write-Host "Error occurred:"
     Write-Host "Status Code: $($_.Exception.Response.StatusCode.value__)"
     Write-Host "Status Description: $($_.Exception.Response.StatusDescription)"
     Write-Host "Error Message: $($_.Exception.Message)"
+    
+    # Get detailed error message if available
+    if ($_.ErrorDetails.Message) {
+        Write-Host "Detailed Error: $($_.ErrorDetails.Message)"
+    }
 }
