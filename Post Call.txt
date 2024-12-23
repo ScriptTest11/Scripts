@@ -1,0 +1,35 @@
+# API Authentication and Request Parameters
+$clientId = "YOUR_CLIENT_ID"
+$clientSecret = "YOUR_CLIENT_SECRET"
+$apiUrl = "YOUR_API_ENDPOINT"
+
+# Request body
+$body = @{
+    name = "John"
+    lastName = "Doe"
+    phone = "+1234567890"
+} | ConvertTo-Json
+
+# Create authentication header
+$auth = [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("${clientId}:${clientSecret}"))
+$headers = @{
+    Authorization = "Basic $auth"
+    'Content-Type' = 'application/json'
+}
+
+try {
+    # Make the API call
+    $response = Invoke-RestMethod -Uri $apiUrl -Method Post -Headers $headers -Body $body
+
+    # Handle the response
+    Write-Host "API call successful!"
+    Write-Host "Response:"
+    $response | ConvertTo-Json
+}
+catch {
+    # Error handling
+    Write-Host "Error making API call:"
+    Write-Host "Status Code: $($_.Exception.Response.StatusCode.value__)"
+    Write-Host "Status Description: $($_.Exception.Response.StatusDescription)"
+    Write-Host "Error Message: $($_.Exception.Message)"
+}
