@@ -1,51 +1,93 @@
-# Authentication Parameters
+# Environment variables
+$tenant = "YOUR_TENANT_NAME"
+$domain = "YOUR_DOMAIN"
 $clientId = "YOUR_CLIENT_ID"
 $clientSecret = "YOUR_CLIENT_SECRET"
-$tokenUrl = "YOUR_TOKEN_ENDPOINT"
-$apiUrl = "YOUR_API_ENDPOINT"
 
-# Request body for the API call
-$apiBody = @{
-    name = "John"
-    lastName = "Doe"
-    phone = "+1234567890"
-} | ConvertTo-Json
+# Construct token URL
+$tokenUrl = "https://$tenant.api.$domain.com/oauth/token"
 
-try {
-    # First, get the access token
-    $tokenBody = @{
+# Function to get new access token
+function Get-NewAccessToken {
+    # Prepare form data
+    $formData = @{
         grant_type = "client_credentials"
         client_id = $clientId
         client_secret = $clientSecret
     }
 
-    # Get access token
-    $tokenResponse = Invoke-RestMethod -Uri $tokenUrl -Method Post -Body $tokenBody -ContentType "application/x-www-form-urlencoded"
-    $accessToken = $tokenResponse.access_token
+    try {
+        # Make token request
+        $tokenResponse = Invoke-RestMethod -Uri $tokenUrl -Method Post -Body $formData -ContentType "application/x-www-form-urlencoded"
+        
+        # Store token and expiration time
+        $expirationTime = (Get-Date).AddHours(12)
+        
+        return @{
+            AccessToken = $tokenResponse.access_token
+            ExpirationTime = $expirationTime
+        }
+    }
+    catch {
+        Write-Host "Error getting access token:"
+        Write-Host "Status Code: $($_.Exception.Response.StatusCode.value__)"
+        Write-Host "Error Message: $($_.Exception.Message)"
+        throw
+    }
+}
 
-    # Create headers with the access token
+# Function to make API call
+function Invoke-ApiCall {
+    param (
+        [string]$accessToken,
+        [string]$apiUrl,
+        [hashtable]$bodyData
+    )
+
     $headers = @{
         Authorization = "Bearer $accessToken"
         'Content-Type' = 'application/json'
     }
 
-    # Make the API call with the access token
-    $response = Invoke-RestMethod -Uri $apiUrl -Method Post -Headers $headers -Body $apiBody
+    $body = $bodyData | ConvertTo-Json
 
-    # Handle the response
+    try {
+        $response = Invoke-RestMethod -Uri $apiUrl -Method Post -Headers $headers -Body $body
+        return $response
+    }
+    catch {
+        Write-Host "Error making API call:"
+        Write-Host "Status Code: $($_.Exception.Response.StatusCode.value__)"
+        Write-Host "Error Message: $($_.Exception.Message)"
+        throw
+    }
+}
+
+# Main script execution
+try {
+    # Get token
+    $tokenInfo = Get-NewAccessToken
+    $accessToken = $tokenInfo.AccessToken
+    
+    # Your API endpoint
+    $apiUrl = "YOUR_API_ENDPOINT"
+    
+    # Your request body
+    $bodyData = @{
+        name = "John"
+        lastName = "Doe"
+        phone = "+1234567890"
+    }
+
+    # Make API call
+    $response = Invoke-ApiCall -accessToken $accessToken -apiUrl $apiUrl -bodyData $bodyData
+    
+    # Handle response
     Write-Host "API call successful!"
     Write-Host "Response:"
     $response | ConvertTo-Json
 }
 catch {
-    # Error handling
-    Write-Host "Error occurred:"
-    Write-Host "Status Code: $($_.Exception.Response.StatusCode.value__)"
-    Write-Host "Status Description: $($_.Exception.Response.StatusDescription)"
-    Write-Host "Error Message: $($_.Exception.Message)"
-    
-    # Get detailed error message if available
-    if ($_.ErrorDetails.Message) {
-        Write-Host "Detailed Error: $($_.ErrorDetails.Message)"
-    }
+    Write-Host "Script execution failed:"
+    Write-Host $_.Exception.Message
 }
