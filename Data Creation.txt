@@ -29,10 +29,10 @@ public class CSVProcessor {
             final int TERMINATION_DATE_COL = 6;
             final int COUNTRY_COL = 7;
 
-            String yesterdayFilePath = "C:\\Users\\sagar\\Documents\\File Comparison Test\\Test-12-20-2024.csv";
-            String todayFilePath = "C:\\Users\\sagar\\Documents\\File Comparison Test\\Test-12-21-2024.csv";
+            String yesterdayFilePath = "";
+            String todayFilePath = "";
 
-            String outputDirectory = "C:\\Users\\sagar\\Documents\\File Comparison Test";
+            String outputDirectory = "";
             String outputFileName = "Comp-" + today.format(formatter) + ".csv";
             Path outputPath = Paths.get(outputDirectory, outputFileName);
 
