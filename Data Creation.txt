@@ -1,20 +1,25 @@
-import java.io.*;
+package org.example;
+
+import com.opencsv.CSVReader;
+import com.opencsv.CSVReaderBuilder;
+import com.opencsv.CSVWriter;
+
+import java.io.FileReader;
+import java.io.FileWriter;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.nio.file.Files;
 
-public class CSVProcessorold {
+public class CSVProcessor {
     public static void main(String[] args) {
         try {
-
             LocalDate today = LocalDate.now();
             LocalDate yesterday = today.minusDays(1);
             DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd");
             DateTimeFormatter hireDateFormatter = DateTimeFormatter.ofPattern("MM/dd/yyyy");
-
 
             final int FIRSTNAME_COL = 1;
             final int LASTNAME_COL = 2;
@@ -24,43 +29,33 @@ public class CSVProcessorold {
             final int TERMINATION_DATE_COL = 6;
             final int COUNTRY_COL = 7;
 
-            String yesterdayFilePath = "";
-            String todayFilePath = "";
+            String yesterdayFilePath = "C:\\Users\\sagar\\Documents\\File Comparison Test\\Test-12-20-2024.csv";
+            String todayFilePath = "C:\\Users\\sagar\\Documents\\File Comparison Test\\Test-12-21-2024.csv";
 
-
-            // Specify output directory and file name
-            String outputDirectory = ""; // Replace with your desired directory path
+            String outputDirectory = "C:\\Users\\sagar\\Documents\\File Comparison Test";
             String outputFileName = "Comp-" + today.format(formatter) + ".csv";
             Path outputPath = Paths.get(outputDirectory, outputFileName);
 
-
             Files.createDirectories(Paths.get(outputDirectory));
-
 
             List<String> yesterdayIds = new ArrayList<>();
             List<String> todayIds = new ArrayList<>();
             Map<String, String[]> todayDetails = new HashMap<>();
-            Map<String, String[]> yesterdayDetails = new HashMap<>(); // Extended to store more details
+            Map<String, String[]> yesterdayDetails = new HashMap<>();
 
-            // Read from first file (yesterday)
-            try (BufferedReader br = new BufferedReader(new FileReader(yesterdayFilePath))) {
-                String line;
-                boolean firstLine = true;
-                while ((line = br.readLine()) != null) {
-                    if (firstLine) {
-                        firstLine = false;
-                        continue;
-                    }
-                    String[] values = line.split(",");
+            // Read yesterday's file using OpenCSV
+            try (CSVReader reader = new CSVReaderBuilder(new FileReader(yesterdayFilePath))
+                    .withSkipLines(1)
+                    .build()) {
+                String[] values;
+                while ((values = reader.readNext()) != null) {
                     if (values.length > 0) {
                         String empId = values[0];
                         yesterdayIds.add(empId);
 
-                        // Store yesterday's details
-                        String[] details = new String[2]; // [actionCode, terminationDate]
+                        String[] details = new String[2];
                         details[0] = values.length > ACTIONCODE_COL ? values[ACTIONCODE_COL].trim() : "";
 
-                        // Format termination date if exists
                         if (values.length > TERMINATION_DATE_COL && !values[TERMINATION_DATE_COL].trim().isEmpty()) {
                             try {
                                 LocalDate termDate = LocalDate.parse(values[TERMINATION_DATE_COL].trim(), hireDateFormatter);
@@ -77,27 +72,21 @@ public class CSVProcessorold {
                 }
             }
 
-            // Read from second file (today)
-            try (BufferedReader br = new BufferedReader(new FileReader(todayFilePath))) {
-                String line;
-                boolean firstLine = true;
-                while ((line = br.readLine()) != null) {
-                    if (firstLine) {
-                        firstLine = false;
-                        continue;
-                    }
-                    String[] values = line.split(",");
+            // Read today's file using OpenCSV
+            try (CSVReader reader = new CSVReaderBuilder(new FileReader(todayFilePath))
+                    .withSkipLines(1)
+                    .build()) {
+                String[] values;
+                while ((values = reader.readNext()) != null) {
                     if (values.length > 0) {
                         String empId = values[0];
                         todayIds.add(empId);
 
-
-                        String[] details = new String[7]; // Extended to include more details
+                        String[] details = new String[7];
                         details[0] = values.length > FIRSTNAME_COL ? values[FIRSTNAME_COL].trim() : "";
                         details[1] = values.length > LASTNAME_COL ? values[LASTNAME_COL].trim() : "";
                         details[2] = values.length > PAY_COL ? values[PAY_COL].trim() : "";
 
-                        // Format hire date
                         if (values.length > HDATE_COL && !values[HDATE_COL].trim().isEmpty()) {
                             try {
                                 LocalDate hireDate = LocalDate.parse(values[HDATE_COL].trim(), hireDateFormatter);
@@ -111,7 +100,6 @@ public class CSVProcessorold {
 
                         details[4] = values.length > ACTIONCODE_COL ? values[ACTIONCODE_COL].trim() : "";
 
-                        // Format termination date
                         if (values.length > TERMINATION_DATE_COL && !values[TERMINATION_DATE_COL].trim().isEmpty()) {
                             try {
                                 LocalDate termDate = LocalDate.parse(values[TERMINATION_DATE_COL].trim(), hireDateFormatter);
@@ -130,60 +118,59 @@ public class CSVProcessorold {
                 }
             }
 
-
             Set<String> yesterdayIdSet = new HashSet<>(yesterdayIds);
 
-            // Write to output file
-            try (FileWriter fw = new FileWriter(outputPath.toFile())) {
-                // Updated headers to include new columns
-                fw.write("yesterday-" + yesterday.format(formatter) +
-                        ",today-" + today.format(formatter) +
-                        ",empID_CHECK" +
-                        ",FIRSTNAME" +
-                        ",LASTNAME" +
-                        ",PAY" +
-                        ",HDATE" +
-                        ",ACTIONCODETODAY" +
-                        ",ACTIONCODEYESTERDAY" +
-                        ",CHECK_ACTION_CODE" +
-                        ",TERMINATION_DATE_YESTERDAY" +
-                        ",TERMINATION_DATE_TODAY" +
-                        ",CHECK_TERMINATION_DATE" +
-                        ",COUNTRY\n");
+            // Write to output file using CSVWriter
+            try (CSVWriter writer = new CSVWriter(new FileWriter(outputPath.toFile()))) {
+                // Write headers
+                String[] headers = {
+                        "yesterday-" + yesterday.format(formatter),
+                        "today-" + today.format(formatter),
+                        "empID_CHECK",
+                        "FIRSTNAME",
+                        "LASTNAME",
+                        "PAY",
+                        "HDATE",
+                        "ACTIONCODETODAY",
+                        "ACTIONCODEYESTERDAY",
+                        "CHECK_ACTION_CODE",
+                        "TERMINATION_DATE_YESTERDAY",
+                        "TERMINATION_DATE_TODAY",
+                        "CHECK_TERMINATION_DATE",
+                        "COUNTRY"
+                };
+                writer.writeNext(headers);
 
                 int maxLength = Math.max(yesterdayIds.size(), todayIds.size());
-
 
                 for (int i = 0; i < maxLength; i++) {
                     String yesterdayId = i < yesterdayIds.size() ? yesterdayIds.get(i) : "";
                     String todayId = i < todayIds.size() ? todayIds.get(i) : "";
-
 
                     String checkResult = "";
                     if (!todayId.isEmpty()) {
                         checkResult = yesterdayIdSet.contains(todayId) ? "TRUE" : "FALSE";
                     }
 
-
                     String[] todayData = todayDetails.getOrDefault(todayId, new String[]{"", "", "", "", "", "", ""});
                     String[] yesterdayData = yesterdayDetails.getOrDefault(yesterdayId, new String[]{"", ""});
 
-                    // Check if action codes match
+                    
                     String actionCodeCheck = "";
                     if (!todayId.isEmpty() && yesterdayIdSet.contains(todayId)) {
                         String yesterdayActionCode = yesterdayDetails.get(todayId)[0];
                         actionCodeCheck = todayData[4].equals(yesterdayActionCode) ? "TRUE" : "FALSE";
                     }
 
-                    // Check if termination dates match
+             
                     String terminationDateCheck = "";
                     if (!todayId.isEmpty() && yesterdayIdSet.contains(todayId)) {
                         String yesterdayTermDate = yesterdayDetails.get(todayId)[1];
                         terminationDateCheck = todayData[5].equals(yesterdayTermDate) ? "TRUE" : "FALSE";
                     }
 
-                    // Write the line with all new columns
-                    fw.write(String.format("%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n",
+               
+                    String[] rowData = {
                             yesterdayId,
                             todayId,
                             checkResult,
@@ -198,14 +185,15 @@ public class CSVProcessorold {
                             todayData[5], // Termination Date Today
                             terminationDateCheck, // Check Termination Date
                             todayData[6]  // Country
-                    ));
+                    };
+                    writer.writeNext(rowData);
                 }
             }
 
             System.out.println("Process completed successfully!");
             System.out.println("Created file: " + outputPath.toString());
 
-        } catch (IOException e) {
+        } catch (Exception e) {
             System.err.println("Error processing files: " + e.getMessage());
             e.printStackTrace();
         }
