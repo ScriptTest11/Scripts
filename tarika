@@ -1,0 +1,114 @@
+# Configuration
+$baseUrl = "YOUR_API_BASE_URL"
+$headers = @{
+    "Authorization" = "Bearer YOUR_TOKEN"
+    "Content-Type" = "application/json"
+}
+
+# Create a directory to store all CSV files
+$outputDir = "Workflow_Executions"
+if (-not (Test-Path $outputDir)) {
+    New-Item -ItemType Directory -Path $outputDir
+}
+
+function Get-WorkflowExecutions {
+    param (
+        [string]$workflowId,
+        [string]$suffix = ""
+    )
+
+    try {
+        $executionDetails = @()
+        $executionResponse = Invoke-RestMethod -Uri "$baseUrl/$workflowId/execution?count=true&filter=status eq 'failure'" -Method Get -Headers $headers
+        
+        foreach ($execution in $executionResponse) {
+            $executionDetails += [PSCustomObject]@{
+                WorkflowId = $workflowId
+                ExecutionId = $execution.id
+                # Add any other fields you want to capture
+            }
+        }
+
+        # Create CSV file name with workflow ID
+        $csvFileName = "WF-$workflowId$suffix.csv"
+        $csvPath = Join-Path $outputDir $csvFileName
+
+        # Export execution details to CSV
+        $executionDetails | Export-Csv -Path $csvPath -NoTypeInformation
+        Write-Host "Successfully exported execution details to $csvFileName"
+        
+        return $csvPath
+    }
+    catch {
+        Write-Host "Error getting execution details for workflow ID: $workflowId"
+        Write-Host $_.Exception.Message
+        return $null
+    }
+}
+
+try {
+    # First API call to get workflows
+    $response = Invoke-RestMethod -Uri "$baseUrl/workflows" -Method Get -Headers $headers
+    $workflowIds = $response | ForEach-Object { $_.id }
+    $workflowIds | Out-File -FilePath "$outputDir\workflow_ids.txt"
+    Write-Host "Successfully saved workflow IDs to workflow_ids.txt"
+
+    # Process each workflow ID
+    foreach ($workflowId in $workflowIds) {
+        $originalFile = Join-Path $outputDir "WF-$workflowId.csv"
+        
+        # If original file exists, create new file with "-new" suffix
+        if (Test-Path $originalFile) {
+            Write-Host "Previous execution file found for workflow: $workflowId"
+            
+            # Get new execution details
+            $newFile = Get-WorkflowExecutions -workflowId $workflowId -suffix "-new"
+            
+            if ($newFile) {
+                # Read both files
+                $originalData = Import-Csv -Path $originalFile
+                $newData = Import-Csv -Path $newFile
+
+                # Compare and find differences
+                $differences = Compare-Object -ReferenceObject $originalData -DifferenceObject $newData -Property ExecutionId |
+                    Where-Object { $_.SideIndicator -eq '=>' } |
+                    ForEach-Object {
+                        $newExecution = $newData | Where-Object { $_.ExecutionId -eq $_.ExecutionId }
+                        [PSCustomObject]@{
+                            WorkflowId = $workflowId
+                            ExecutionId = $_.ExecutionId
+                        }
+                    }
+
+                if ($differences) {
+                    # Create differences file
+                    $diffFile = Join-Path $outputDir "WF-$workflowId-diff.csv"
+                    $differences | Export-Csv -Path $diffFile -NoTypeInformation
+                    Write-Host "Created difference file: $diffFile"
+                }
+
+                # Delete original file
+                Remove-Item -Path $originalFile
+                Write-Host "Deleted original file: $originalFile"
+
+                # Rename new file to original name
+                Rename-Item -Path $newFile -NewName "WF-$workflowId.csv"
+                Write-Host "Renamed new file to: WF-$workflowId.csv"
+            }
+        }
+        else {
+            # First time execution for this workflow
+            Get-WorkflowExecutions -workflowId $workflowId
+        }
+    }
+}
+catch {
+    Write-Host "Error making initial API call"
+    Write-Host $_.Exception.Message
+}
+
+# Print final file listing
+Write-Host "`nFinal files in $outputDir:"
+Get-ChildItem -Path $outputDir -File | ForEach-Object {
+    Write-Host $_.FullName
+}
