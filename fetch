@@ -1,0 +1,65 @@
+function Get-WorkflowExecutions {
+    param (
+        [Parameter(Mandatory=$true)]
+        [string]$workflowId,
+        [Parameter(Mandatory=$true)]
+        [string]$workflowName,
+        [Parameter(Mandatory=$true)]
+        [string]$prefix,
+        [string]$outputDir = "C:\WorkflowExecutions" # Default output directory, change as needed
+    )
+
+    try {
+        # Create output directory if it doesn't exist
+        if (-not (Test-Path $outputDir)) {
+            New-Item -ItemType Directory -Path $outputDir | Out-Null
+        }
+
+        # Define workflow-specific file using the prefix parameter
+        $workflowFile = Join-Path $outputDir "WF-$prefix-$workflowId.csv"
+        $executionDetails = @()
+        $offset = 0
+        $limit = 250
+        $totalCount = 0
+        $firstRun = $true
+
+        do {
+            Write-Host "Fetching executions for workflow $workflowId - $workflowName (offset: $offset, limit: $limit)"
+            
+            $uri = "$baseUrl/$workflowId/execution?count=true&filter=status eq 'failure'&offset=$offset&limit=$limit"
+            $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers -ResponseHeadersVariable responseHeaders
+            
+            if ($firstRun) {
+                $totalCount = [int]($responseHeaders.'x-total-count'[0])
+                Write-Host "Total executions to fetch: $totalCount"
+                $firstRun = $false
+            }
+
+            foreach ($execution in $response) {
+                $executionDetails += [PSCustomObject]@{
+                    WorkflowId = $workflowId
+                    WorkflowName = $workflowName
+                    ExecutionId = $execution.id
+                    StartTime = $execution.started
+                    EndTime = $execution.completed
+                }
+            }
+
+            $offset += $limit
+            $percentComplete = [math]::Min(($offset / $totalCount) * 100, 100)
+            Write-Host "Progress: $($percentComplete.ToString('0.0'))% complete"
+
+        } while ($offset -lt $totalCount)
+
+        # Export the data to the workflow-specific CSV file
+        $executionDetails | Export-Csv -Path $workflowFile -NoTypeInformation
+        Write-Host "Execution details for workflow $workflowId exported to $workflowFile"
+
+        return $true
+    }
+    catch {
+        Write-Host "Error getting execution details for workflow ID: $workflowId"
+        Write-Host $_.Exception.Message
+        return $false
+    }
+}
