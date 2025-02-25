@@ -1,3 +1,21 @@
+$workflows = Import-Csv "your_workflow_file.csv"
+$outputDir = "output"
+$output2Dir = "output2"
+$output3Dir = "output3"
+$prefix = "FAILED"
+$baseUrl = "your_base_url_here"
+$headers = @{
+    "Authorization" = "Bearer your_token_here"
+    "Content-Type" = "application/json"
+}
+
+foreach ($dir in @($outputDir, $output2Dir, $output3Dir)) {
+    if (-not (Test-Path $dir)) {
+        New-Item -ItemType Directory -Path $dir | Out-Null
+        Write-Host "Created directory: $dir"
+    }
+}
+
 foreach ($workflow in $workflows) {
     $workflowId = $workflow.WorkflowId.Trim()
     Write-Host "Processing Workflow ID: $workflowId"
@@ -97,4 +115,19 @@ if (Test-Path $output2Dir) {
         Remove-Item $output2Dir -Force
         Write-Host "Removed empty output2 directory"
     }
+}
+
+# Clean up empty output3 directory
+if (Test-Path $output3Dir) {
+    $output3Files = Get-ChildItem -Path $output3Dir -Filter "WF-$prefix-*.csv"
+    if ($output3Files.Count -eq 0) {
+        Remove-Item $output3Dir -Force
+        Write-Host "Removed empty output3 directory"
+    }
+}
+
+Write-Host "`nProcessing completed!"
+Write-Host "- Files in $outputDir: Updated data"
+if (Test-Path $output3Dir) {
+    Write-Host "- Files in $output3Dir: Files with differences"
 }
