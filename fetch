@@ -1,96 +1,146 @@
-# Read from CSV file
-$workflows = Import-Csv "your_workflow_file.csv"  # Replace with your actual CSV file path
-
-# Configuration
+$workflows = Import-Csv "your_workflow_file.csv"
 $outputDir = "output"
+$output2Dir = "output2"
+$output3Dir = "output3"
 $prefix = "FAILED"
-$baseUrl = "your_base_url_here"  # Replace with your actual base URL
+$baseUrl = "your_base_url_here"
 $headers = @{
-    "Authorization" = "Bearer your_token_here"  # Replace with your actual headers
+    "Authorization" = "Bearer your_token_here"
     "Content-Type" = "application/json"
 }
 
-Write-Host "Starting to process workflows..."
-Write-Host "Found $($workflows.Count) workflows to process"
-
-# Create output directory if it doesn't exist
-if (-not (Test-Path $outputDir)) {
-    New-Item -ItemType Directory -Path $outputDir | Out-Null
-    Write-Host "Created output directory: $outputDir"
+# Create directories if they don't exist
+foreach ($dir in @($outputDir, $output2Dir, $output3Dir)) {
+    if (-not (Test-Path $dir)) {
+        New-Item -ItemType Directory -Path $dir | Out-Null
+        Write-Host "Created directory: $dir"
+    }
 }
 
-# Process each workflow from CSV
 foreach ($workflow in $workflows) {
-    $workflowId = $workflow.WorkflowId.Trim()  # Ensure no whitespace
-    Write-Host "`n==============================================="
+    $workflowId = $workflow.WorkflowId.Trim()
     Write-Host "Processing Workflow ID: $workflowId"
-    Write-Host "==============================================="
     
+    $file1Path = Join-Path $outputDir "WF-$prefix-$workflowId.csv"
+    
+    if (Test-Path $file1Path) {
+        $workflowFile = Join-Path $output2Dir "WF-$prefix-$workflowId.csv"
+        Write-Host "File exists in output, using output2"
+    } else {
+        $workflowFile = $file1Path
+        Write-Host "Using output directory"
+    }
+
     try {
-        $workflowFile = Join-Path $outputDir "WF-$prefix-$workflowId.csv"
         $executionDetails = @()
-        $offset = 0
-        $limit = 250
-        $totalCount = 0
-        $firstRun = $true
-
-        do {
-            Write-Host "Fetching executions for workflow $workflowId (offset: $offset, limit: $limit)"
-            
-            try {
-                $uri = "$baseUrl/$workflowId/execution?count=true&filter=status eq 'failure'&offset=$offset&limit=$limit"
-                Write-Host "Calling API: $uri"
-                
-                $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers -ResponseHeadersVariable responseHeaders
-                
-                if ($firstRun) {
-                    $totalCount = [int]($responseHeaders.'x-total-count'[0])
-                    Write-Host "Total executions to fetch: $totalCount"
-                    $firstRun = $false
+        $uri = "$baseUrl/$workflowId/execution?count=true&filter=status eq 'failure'"
+        $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers
+        
+        if ($response) {
+            foreach ($execution in $response) {
+                $executionDetails += [PSCustomObject]@{
+                    WorkflowId = $workflowId
+                    WorkflowName = $workflow.WorkflowName
+                    ExecutionId = $execution.id
+                    StartTime = $execution.started
+                    EndTime = $execution.completed
+                    Status = $execution.status
+                    ErrorMessage = $execution.errorMessage
                 }
-
-                if ($response) {
-                    foreach ($execution in $response) {
-                        $executionDetails += [PSCustomObject]@{
-                            WorkflowId = $workflowId
-                            WorkflowName = $workflow.WorkflowName
-                            ExecutionId = $execution.id
-                            StartTime = $execution.started
-                            EndTime = $execution.completed
-                        }
-                    }
-                }
-
-                $offset += $limit
-                $percentComplete = [math]::Min(($offset / $totalCount) * 100, 100)
-                Write-Host "Progress: $($percentComplete.ToString('0.0'))% complete"
             }
-            catch {
-                Write-Host "Error during API call for offset $offset"
-                Write-Host "Error: $($_.Exception.Message)"
-                break
-            }
-
-        } while ($offset -lt $totalCount)
-
-        if ($executionDetails.Count -gt 0) {
-            # Export the data to the workflow-specific CSV file
-            $executionDetails | Export-Csv -Path $workflowFile -NoTypeInformation -Force
-            Write-Host "Execution details for workflow $workflowId exported to $workflowFile"
-            Write-Host "Total records exported: $($executionDetails.Count)"
-        }
-        else {
-            Write-Host "No execution details found for workflow $workflowId"
         }
     }
     catch {
-        Write-Host "Error processing workflow ID: $workflowId"
-        Write-Host "Error: $($_.Exception.Message)"
-        continue  # Continue to next workflow
+        Write-Host "Error for workflow $workflowId: $($_.Exception.Message)"
+        [PSCustomObject]@{
+            WorkflowId = $workflowId
+            WorkflowName = $workflow.WorkflowName
+            ExecutionId = ""
+            StartTime = ""
+            EndTime = ""
+            Status = "Error"
+            ErrorMessage = $_.Exception.Message
+        } | Export-Csv -Path $workflowFile -NoTypeInformation -Force
+        continue
+    }
+
+    if ($executionDetails.Count -eq 0) {
+        [PSCustomObject]@{
+            WorkflowId = $workflowId
+            WorkflowName = $workflow.WorkflowName
+            ExecutionId = ""
+            StartTime = ""
+            EndTime = ""
+            Status = "NoExecutions"
+            ErrorMessage = ""
+        } | Export-Csv -Path $workflowFile -NoTypeInformation -Force
+        Write-Host "Created empty file: $workflowFile"
+    }
+    else {
+        $executionDetails | Export-Csv -Path $workflowFile -NoTypeInformation -Force
+        Write-Host "Created file with $($executionDetails.Count) records: $workflowFile"
+    }
+
+    $file2Path = Join-Path $output2Dir "WF-$prefix-$workflowId.csv"
+    $file3Path = Join-Path $output3Dir "WF-$prefix-$workflowId.csv"
+
+    if ((Test-Path $file1Path) -and (Test-Path $file2Path)) {
+        Write-Host "Comparing files for workflow $workflowId"
+        $data1 = Import-Csv $file1Path
+        $data2 = Import-Csv $file2Path
+        
+        $differences = $data2 | Where-Object {
+            $record2 = $_
+            -not ($data1 | Where-Object {
+                $_.ExecutionId -eq $record2.ExecutionId
+            })
+        }
+
+        if ($differences) {
+            $differences | Export-Csv -Path $file3Path -NoTypeInformation -Force
+            Write-Host "Created difference file with $($differences.Count) records: $file3Path"
+        }
+        else {
+            Write-Host "No differences found for workflow $workflowId"
+            if (Test-Path $file3Path) {
+                Remove-Item $file3Path -Force
+                Write-Host "Removed previous difference file: $file3Path"
+            }
+        }
     }
 }
 
-Write-Host "`nAll workflows processing completed!"
-Write-Host "Summary:"
-Write-Host "- Total workflows processed: $($workflows.Count)"
-Write-Host "- Output directory: $outputDir"
+# Move files from output2 to output
+Write-Host "`nMoving files from output2 to output..."
+if (Test-Path $output2Dir) {
+    $output2Files = Get-ChildItem -Path $output2Dir -Filter "WF-$prefix-*.csv"
+    foreach ($file in $output2Files) {
+        $destinationPath = Join-Path $outputDir $file.Name
+        if (Test-Path $destinationPath) {
+            Remove-Item $destinationPath -Force
+            Write-Host "Removed existing file: $destinationPath"
+        }
+        Move-Item -Path $file.FullName -Destination $outputDir -Force
+        Write-Host "Moved file: $($file.Name) to output directory"
+    }
+    
+    if ((Get-ChildItem -Path $output2Dir).Count -eq 0) {
+        Remove-Item $output2Dir -Force
+        Write-Host "Removed empty output2 directory"
+    }
+}
+
+# Clean up empty output3 directory
+if (Test-Path $output3Dir) {
+    $output3Files = Get-ChildItem -Path $output3Dir -Filter "WF-$prefix-*.csv"
+    if ($output3Files.Count -eq 0) {
+        Remove-Item $output3Dir -Force
+        Write-Host "Removed empty output3 directory"
+    }
+}
+
+Write-Host "`nProcessing completed!"
+Write-Host "- Files in $outputDir: Updated data"
+if (Test-Path $output3Dir) {
+    Write-Host "- Files in $output3Dir: Files with differences"
+}
