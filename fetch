@@ -1,36 +1,10 @@
-$workflows = Import-Csv "your_workflow_file.csv"
-$outputDir = "output"
-$output2Dir = "output2"
-$output3Dir = "output3"
-$prefix = "FAILED"
-$baseUrl = "your_base_url_here"
-$headers = @{
-    "Authorization" = "Bearer your_token_here"
-    "Content-Type" = "application/json"
-}
-
-# Create directories if they don't exist
-foreach ($dir in @($outputDir, $output2Dir, $output3Dir)) {
-    if (-not (Test-Path $dir)) {
-        New-Item -ItemType Directory -Path $dir | Out-Null
-        Write-Host "Created directory: $dir"
-    }
-}
-
 foreach ($workflow in $workflows) {
     $workflowId = $workflow.WorkflowId.Trim()
     Write-Host "Processing Workflow ID: $workflowId"
     
     $file1Path = Join-Path $outputDir "WF-$prefix-$workflowId.csv"
+    $workflowFile = Join-Path $output2Dir "WF-$prefix-$workflowId.csv"
     
-    if (Test-Path $file1Path) {
-        $workflowFile = Join-Path $output2Dir "WF-$prefix-$workflowId.csv"
-        Write-Host "File exists in output, using output2"
-    } else {
-        $workflowFile = $file1Path
-        Write-Host "Using output directory"
-    }
-
     try {
         $executionDetails = @()
         $uri = "$baseUrl/$workflowId/execution?count=true&filter=status eq 'failure'"
@@ -81,13 +55,12 @@ foreach ($workflow in $workflows) {
         Write-Host "Created file with $($executionDetails.Count) records: $workflowFile"
     }
 
-    $file2Path = Join-Path $output2Dir "WF-$prefix-$workflowId.csv"
     $file3Path = Join-Path $output3Dir "WF-$prefix-$workflowId.csv"
 
-    if ((Test-Path $file1Path) -and (Test-Path $file2Path)) {
+    if ((Test-Path $file1Path) -and (Test-Path $workflowFile)) {
         Write-Host "Comparing files for workflow $workflowId"
         $data1 = Import-Csv $file1Path
-        $data2 = Import-Csv $file2Path
+        $data2 = Import-Csv $workflowFile
         
         $differences = $data2 | Where-Object {
             $record2 = $_
@@ -110,37 +83,18 @@ foreach ($workflow in $workflows) {
     }
 }
 
-# Move files from output2 to output
+# Move files from output2 to output (replacing existing files)
 Write-Host "`nMoving files from output2 to output..."
 if (Test-Path $output2Dir) {
     $output2Files = Get-ChildItem -Path $output2Dir -Filter "WF-$prefix-*.csv"
     foreach ($file in $output2Files) {
         $destinationPath = Join-Path $outputDir $file.Name
-        if (Test-Path $destinationPath) {
-            Remove-Item $destinationPath -Force
-            Write-Host "Removed existing file: $destinationPath"
-        }
-        Move-Item -Path $file.FullName -Destination $outputDir -Force
-        Write-Host "Moved file: $($file.Name) to output directory"
+        Move-Item -Path $file.FullName -Destination $destinationPath -Force
+        Write-Host "Moved and replaced file: $($file.Name) in output directory"
     }
     
     if ((Get-ChildItem -Path $output2Dir).Count -eq 0) {
         Remove-Item $output2Dir -Force
         Write-Host "Removed empty output2 directory"
     }
-}
-
-# Clean up empty output3 directory
-if (Test-Path $output3Dir) {
-    $output3Files = Get-ChildItem -Path $output3Dir -Filter "WF-$prefix-*.csv"
-    if ($output3Files.Count -eq 0) {
-        Remove-Item $output3Dir -Force
-        Write-Host "Removed empty output3 directory"
-    }
-}
-
-Write-Host "`nProcessing completed!"
-Write-Host "- Files in $outputDir: Updated data"
-if (Test-Path $output3Dir) {
-    Write-Host "- Files in $output3Dir: Files with differences"
 }
