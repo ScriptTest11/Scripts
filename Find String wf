@@ -1,0 +1,82 @@
+# Test data setup
+$baseUrl = "https://api.example.com/api/v1"
+$workflowId = "test-workflow-123"
+$headers = @{
+    "Authorization" = "Bearer test-token"
+    "Content-Type" = "application/json"
+}
+
+# Mock response data
+$mockExecutions = @(
+    @{
+        id = "exec-001"
+        status = "failure"
+        body = "Error occurred: your_static_string in execution"
+    },
+    @{
+        id = "exec-002"
+        status = "failure"
+        body = "Failed with another_string error"
+    },
+    @{
+        id = "exec-003"
+        status = "failure"
+        body = "Different error message"
+    }
+)
+
+# Mock Invoke-RestMethod
+function Mock-InvokeRestMethod {
+    param (
+        [string]$Uri,
+        [string]$Method,
+        [hashtable]$Headers
+    )
+    
+    if ($Uri -match "/execution$") {
+        return $mockExecutions
+    }
+    elseif ($Uri -match "/execution/exec-\d{3}$") {
+        $executionId = $Uri.Split('/')[-1]
+        return $mockExecutions | Where-Object { $_.id -eq $executionId }
+    }
+}
+
+# Main code with testing
+try {
+    $executionDetails = @()
+    $uri = "$baseUrl/$workflowId/execution?count=true&filter=status eq 'failure'"
+    
+    Write-Host "Fetching executions from: $uri"
+    $response = Mock-InvokeRestMethod -Uri $uri -Method Get -Headers $headers
+    
+    if ($response) {
+        Write-Host "Found $($response.Count) failed executions"
+        
+        foreach ($execution in $response) {
+            $executionId = $execution.id
+            
+            try {
+                $executionUri = "$baseUrl/$workflowId/execution/$executionId"
+                Write-Host "`nFetching details for execution: $executionId"
+                $executionResponse = Mock-InvokeRestMethod -Uri $executionUri -Method Get -Headers $headers
+                
+                if ($executionResponse.body -match 'your_static_string' -or 
+                    $executionResponse.body -match 'another_string') {
+                    Write-Host "Match found in ExecutionId: $executionId" -ForegroundColor Green
+                    Write-Host "Response body: $($executionResponse.body)" -ForegroundColor Green
+                }
+                else {
+                    Write-Host "No match found in ExecutionId: $executionId" -ForegroundColor Yellow
+                }
+            }
+            catch {
+                Write-Host "Error fetching details for ExecutionId $executionId: $($_.Exception.Message)" -ForegroundColor Red
+                continue
+            }
+        }
+    }
+}
+catch {
+    Write-Host "Error for workflow $workflowId: $($_.Exception.Message)" -ForegroundColor Red
+}
