@@ -1,0 +1,57 @@
+<#  
+.SYNOPSIS
+    Move specific files between two remote folders on the same SFTP server.
+
+.NOTES
+    Requires: Posh-SSH module (Install-Module Posh-SSH -Scope CurrentUser)
+#>
+
+Import-Module Posh-SSH -ErrorAction Stop
+
+# ——— user-specific variables ———
+$server       = 'your_sftp_server_address'
+$port         = 22                       # change if your SFTP runs on a non-standard port
+$srcRoot      = '/path/to/source/folder'
+$dstRoot      = '/path/to/destination/folder'
+$filesToMove  = @('file1.txt','file2.txt')
+
+# ——— optional transcript (comment out if not needed) ———
+$logFile = 'C:\Logs\SftpMove_{0:yyyyMMdd}.log' -f (Get-Date)
+Start-Transcript -Path $logFile -Append
+
+try {
+    # Prompt for credentials securely
+    $cred = Get-Credential -Message "Enter SFTP credentials for $server"
+
+    # Create the SFTP session
+    $sftp = New-SFTPSession -ComputerName $server `
+                            -Port $port `
+                            -Credential $cred `
+                            -AcceptKey `
+                            -ErrorAction Stop   # fail fast if auth/fingerprint mismatch
+
+    foreach ($file in $filesToMove) {
+        # Build remote paths with forward slashes
+        $src = "$srcRoot/$file"
+        $dst = "$dstRoot/$file"
+
+        if (Test-SFTPPath -SessionId $sftp.SessionId -Path $src) {
+            Rename-SFTPFile -SessionId $sftp.SessionId `
+                            -OldPath   $src `
+                            -NewPath   $dst `
+                            -Confirm:$false -ErrorAction Stop
+
+            Write-Host "✔ Moved '$file'  →  '$dstRoot'" -ForegroundColor Green
+        }
+        else {
+            Write-Warning "⚠ File '$file' not found under '$srcRoot'."
+        }
+    }
+}
+catch {
+    Write-Error "❌  $(($_.Exception | Format-List -Force | Out-String).Trim())"
+}
+finally {
+    if ($sftp) { Remove-SFTPSession -SessionId $sftp.SessionId }
+    Stop-Transcript | Out-Null
+}
