@@ -3,8 +3,8 @@ Install-Module -Name Posh-SSH -Force -Scope CurrentUser -AllowClobber
 Import-Module Posh-SSH
 
 # Hardcoded SFTP credentials (for testing only)
-$SftpUser = "71e76c86bd3d4a67b4dc17419c1b8136"
-$SftpPass = "lYjPDZmzn9ceXYZpOS5lkhM3dUXXYQEQ"
+$SftpUser = ""
+$SftpPass = ""
 $SecurePass = ConvertTo-SecureString $SftpPass -AsPlainText -Force
 $Credential = New-Object System.Management.Automation.PSCredential ($SftpUser, $SecurePass)
 
