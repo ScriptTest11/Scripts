@@ -1,49 +1,77 @@
-# Get SFTP credentials from Automation Credential Asset
-$Credential = Get-AutomationPSCredential -Name "SftpCredential"
-if (-not $Credential) {
-    Write-Error "Could not retrieve SFTP credentials from Automation Account."
-    exit
+# Install and import Posh-SSH
+Install-Module -Name Posh-SSH -Force -Scope CurrentUser -AllowClobber
+Import-Module Posh-SSH
+
+# Hardcoded SFTP credentials (for testing only)
+$SftpUser = "71e76c86bd3d4a67b4dc17419c1b8136"
+$SftpPass = "lYjPDZmzn9ceXYZpOS5lkhM3dUXXYQEQ"
+$SecurePass = ConvertTo-SecureString $SftpPass -AsPlainText -Force
+$Credential = New-Object System.Management.Automation.PSCredential ($SftpUser, $SecurePass)
+
+$SftpHost = "us-east-1.sftpcloud.io"
+$RemoteHosFolder = "/hcmcloud/"
+$RemoteBackupFolder = "/hcmcloud/backup/"
+
+# Setup log file
+$TempDir = $env:TEMP
+if (-not $TempDir) {
+    $TempDir = [System.IO.Path]::GetTempPath()
+}
+$LogFile = Join-Path $TempDir "sftp_backup_$(Get-Date -Format 'yyyyMMdd').log"
+
+function Write-Log {
+    param([string]$Message)
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    Add-Content -Path $LogFile -Value "$timestamp $Message"
 }
 
-$SftpHost = "sftp.example.com"
-$RemoteHosFolder = "/Hos"
-$RemoteBackupFolder = "/Hos/backup"
+Write-Log "Script started."
 
 # Only run Monday-Friday
 if ((Get-Date).DayOfWeek -in 'Saturday','Sunday') {
-    Write-Output "Script not run: Today is weekend."
+    Write-Log "Script not run: Today is weekend."
     exit
 }
 
-# Import Posh-SSH module
-Import-Module Posh-SSH
+try {
+    # Create SFTP session
+    $SFTPSession = New-SFTPSession -ComputerName $SftpHost -Credential $Credential -AcceptKey
+    Write-Log "SFTP session established to $SftpHost."
 
-# Create SFTP session
-$SFTPSession = New-SFTPSession -ComputerName $SftpHost -Credential $Credential -AcceptKey
+    # List files in /hcmcloud/
+    $files = Get-SFTPChildItem -SessionId $SFTPSession.SessionId -Path $RemoteHosFolder
+    Write-Log "Listed files in $RemoteHosFolder."
 
-# List files in /Hos
-$files = Get-SFTPChildItem -SessionId $SFTPSession.SessionId -Path $RemoteHosFolder
+    # Find test_sample.txt with today's date
+    $today = (Get-Date).Date
+    $hosFile = $files | Where-Object { $_.Name -eq "test_sample.txt" -and $_.LastWriteTime.Date -eq $today }
 
-# Find hos.csv with today's date
-$today = (Get-Date).Date
-$hosFile = $files | Where-Object { $_.Name -eq "hos.csv" -and $_.LastWriteTime.Date -eq $today }
+    if ($hosFile) {
+        $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+        $localTemp = Join-Path $TempDir "test_sample.txt"
+        $backupFileName = "test_sample.txt-$timestamp"
 
-if ($hosFile) {
-    $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-    $localTemp = "$env:TEMP\hos.csv"
-    $backupFileName = "hos.csv-$timestamp"
+        # Download test_sample.txt
+        Get-SFTPFile -SessionId $SFTPSession.SessionId -RemoteFile "$RemoteHosFolder/test_sample.txt" -LocalPath $localTemp
+        Write-Log "Downloaded test_sample.txt to $localTemp."
 
-    # Download hos.csv
-    Get-SFTPFile -SessionId $SFTPSession.SessionId -RemoteFile "$RemoteHosFolder/hos.csv" -LocalPath $localTemp
+        # Upload to backup folder with timestamp
+        Set-SFTPFile -SessionId $SFTPSession.SessionId -LocalFile $localTemp -RemotePath "$RemoteBackupFolder/$backupFileName"
+        Write-Log "Uploaded $localTemp to $RemoteBackupFolder/$backupFileName."
 
-    # Upload to backup folder with timestamp
-    Set-SFTPFile -SessionId $SFTPSession.SessionId -LocalFile $localTemp -RemotePath "$RemoteBackupFolder/$backupFileName"
+        Remove-Item $localTemp
+        Write-Log "Removed local temp file $localTemp."
+    } else {
+        Write-Log "test_sample.txt not found or not updated today."
+    }
 
-    Write-Output "hos.csv found and backed up as $backupFileName"
-    Remove-Item $localTemp
-} else {
-    Write-Output "hos.csv not found or not updated today."
+    # Remove SFTP session
+    Remove-SFTPSession -SessionId $SFTPSession.SessionId
+    Write-Log "SFTP session closed."
+}
+catch {
+    Write-Log "ERROR: $_"
 }
 
-# Remove SFTP session
-Remove-SFTPSession -SessionId $SFTPSession.SessionId
+Write-Log "Script finished."
+Write-Output "Log file: $LogFile"

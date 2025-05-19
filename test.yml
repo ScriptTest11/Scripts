@@ -1,0 +1,22 @@
+trigger: none
+
+schedules:
+- cron: "*/15 * * * *"   # Every 15 minutes
+  displayName: Every 15 minutes
+  branches:
+    include:
+    - main
+  always: true
+
+pool:
+  vmImage: 'windows-latest'
+
+steps:
+- checkout: self
+
+- task: PowerShell@2
+  displayName: 'Run SFTP hos_backup script'
+  inputs:
+    targetType: 'filePath'
+    filePath: 'hos_backup.ps1'
+    pwsh: true
