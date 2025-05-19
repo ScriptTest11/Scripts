@@ -1,57 +1,49 @@
-<#  
-.SYNOPSIS
-    Move specific files between two remote folders on the same SFTP server.
-
-.NOTES
-    Requires: Posh-SSH module (Install-Module Posh-SSH -Scope CurrentUser)
-#>
-
-Import-Module Posh-SSH -ErrorAction Stop
-
-# ——— user-specific variables ———
-$server       = 'your_sftp_server_address'
-$port         = 22                       # change if your SFTP runs on a non-standard port
-$srcRoot      = '/path/to/source/folder'
-$dstRoot      = '/path/to/destination/folder'
-$filesToMove  = @('file1.txt','file2.txt')
-
-# ——— optional transcript (comment out if not needed) ———
-$logFile = 'C:\Logs\SftpMove_{0:yyyyMMdd}.log' -f (Get-Date)
-Start-Transcript -Path $logFile -Append
-
-try {
-    # Prompt for credentials securely
-    $cred = Get-Credential -Message "Enter SFTP credentials for $server"
-
-    # Create the SFTP session
-    $sftp = New-SFTPSession -ComputerName $server `
-                            -Port $port `
-                            -Credential $cred `
-                            -AcceptKey `
-                            -ErrorAction Stop   # fail fast if auth/fingerprint mismatch
-
-    foreach ($file in $filesToMove) {
-        # Build remote paths with forward slashes
-        $src = "$srcRoot/$file"
-        $dst = "$dstRoot/$file"
-
-        if (Test-SFTPPath -SessionId $sftp.SessionId -Path $src) {
-            Rename-SFTPFile -SessionId $sftp.SessionId `
-                            -OldPath   $src `
-                            -NewPath   $dst `
-                            -Confirm:$false -ErrorAction Stop
-
-            Write-Host "✔ Moved '$file'  →  '$dstRoot'" -ForegroundColor Green
-        }
-        else {
-            Write-Warning "⚠ File '$file' not found under '$srcRoot'."
-        }
-    }
+# Get SFTP credentials from Automation Credential Asset
+$Credential = Get-AutomationPSCredential -Name "SftpCredential"
+if (-not $Credential) {
+    Write-Error "Could not retrieve SFTP credentials from Automation Account."
+    exit
 }
-catch {
-    Write-Error "❌  $(($_.Exception | Format-List -Force | Out-String).Trim())"
+
+$SftpHost = "sftp.example.com"
+$RemoteHosFolder = "/Hos"
+$RemoteBackupFolder = "/Hos/backup"
+
+# Only run Monday-Friday
+if ((Get-Date).DayOfWeek -in 'Saturday','Sunday') {
+    Write-Output "Script not run: Today is weekend."
+    exit
 }
-finally {
-    if ($sftp) { Remove-SFTPSession -SessionId $sftp.SessionId }
-    Stop-Transcript | Out-Null
+
+# Import Posh-SSH module
+Import-Module Posh-SSH
+
+# Create SFTP session
+$SFTPSession = New-SFTPSession -ComputerName $SftpHost -Credential $Credential -AcceptKey
+
+# List files in /Hos
+$files = Get-SFTPChildItem -SessionId $SFTPSession.SessionId -Path $RemoteHosFolder
+
+# Find hos.csv with today's date
+$today = (Get-Date).Date
+$hosFile = $files | Where-Object { $_.Name -eq "hos.csv" -and $_.LastWriteTime.Date -eq $today }
+
+if ($hosFile) {
+    $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+    $localTemp = "$env:TEMP\hos.csv"
+    $backupFileName = "hos.csv-$timestamp"
+
+    # Download hos.csv
+    Get-SFTPFile -SessionId $SFTPSession.SessionId -RemoteFile "$RemoteHosFolder/hos.csv" -LocalPath $localTemp
+
+    # Upload to backup folder with timestamp
+    Set-SFTPFile -SessionId $SFTPSession.SessionId -LocalFile $localTemp -RemotePath "$RemoteBackupFolder/$backupFileName"
+
+    Write-Output "hos.csv found and backed up as $backupFileName"
+    Remove-Item $localTemp
+} else {
+    Write-Output "hos.csv not found or not updated today."
 }
+
+# Remove SFTP session
+Remove-SFTPSession -SessionId $SFTPSession.SessionId
