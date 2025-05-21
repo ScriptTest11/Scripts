@@ -75,3 +75,17 @@ catch {
 
 Write-Log "Script finished."
 Write-Output "Log file: $LogFile"
+
+
+--------------------------
+
+$TempDir = $env:TEMP
+if (-not $TempDir) {
+    try {
+        $TempDir = [System.IO.Path]::GetTempPath()
+    }
+    catch {
+        Write-Output "ERROR: Unable to get temporary path. Defaulting to C:\Temp."
+        $TempDir = "C:\Temp"
+    }
+}
