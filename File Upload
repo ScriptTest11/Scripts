@@ -1,0 +1,211 @@
+# Hardcoded SFTP credentials (for testing only; replace with secure method in production)
+$SftpUser = "your_username"  # Replace with your SFTP username
+$SftpPass = "your_password"  # Replace with your SFTP password
+$SecurePass = ConvertTo-SecureString $SftpPass -AsPlainText -Force
+$Credential = New-Object System.Management.Automation.PSCredential ($SftpUser, $SecurePass)
+
+# SFTP server details and remote paths
+$SftpHost = "us-east-1.sftpcloud.io"  # Replace with your SFTP server hostname or IP
+$RemoteHosFolder = "/hcmcloud/"  # Remote directory where test_sample.txt is located
+$RemoteBackupFolder = "/hcmcloud/backup/"  # Remote directory for backups
+
+# SharePoint details
+$SharePointSiteUrl = "https://yourtenant.sharepoint.com/sites/yoursite"  # Replace with your SharePoint site URL
+$SharePointLibrary = "Documents"  # Replace with your document library name
+$SharePointFolder = "Logs"  # Optional: Subfolder in the library to store logs
+$SharePointUser = "your_sp_username@yourtenant.com"  # Replace with your SharePoint username
+$SharePointPass = "your_sp_password"  # Replace with your SharePoint password
+$SharePointSecurePass = ConvertTo-SecureString $SharePointPass -AsPlainText -Force
+$SharePointCredential = New-Object System.Management.Automation.PSCredential ($SharePointUser, $SharePointSecurePass)
+
+# Email configuration (for sending notifications if file is missing)
+$SmtpServer = "smtp.office365.com"  # Replace with your SMTP server (e.g., smtp.gmail.com for Gmail)
+$SmtpPort = 587  # Common port for TLS
+$EmailFrom = "your_email@yourdomain.com"  # Replace with sender email
+$EmailTo = "recipient_email@yourdomain.com"  # Replace with recipient email
+$EmailSubject = "SFTP File Missing Alert: test_sample.txt"
+$EmailBody = "The file test_sample.txt was not found or not updated for today in the remote folder $RemoteHosFolder on $SftpHost."
+$SmtpUser = "your_email@yourdomain.com"  # Replace with SMTP username (often same as EmailFrom)
+$SmtpPass = "your_email_password"  # Replace with SMTP password or app-specific password
+$SmtpSecurePass = ConvertTo-SecureString $SmtpPass -AsPlainText -Force
+$SmtpCredential = New-Object System.Management.Automation.PSCredential ($SmtpUser, $SmtpSecurePass)
+
+# Setup log file with error handling for TempDir (still needed for initial local storage)
+$TempDir = $env:TEMP
+if (-not $TempDir) {
+    try {
+        $TempDir = [System.IO.Path]::GetTempPath()
+    }
+    catch {
+        Write-Output "ERROR: Unable to get temporary path. Defaulting to C:\Temp."
+        $TempDir = "C:\Temp"
+    }
+}
+
+# Ensure TempDir exists and is writable
+try {
+    if (-not (Test-Path $TempDir)) {
+        New-Item -ItemType Directory -Path $TempDir -ErrorAction Stop | Out-Null
+    }
+    $LogFile = Join-Path $TempDir "sftp_backup_$(Get-Date -Format 'yyyyMMdd').log"
+    # Test write access by creating a temporary test file
+    $testFile = Join-Path $TempDir "test_write.txt"
+    "Test" | Out-File -FilePath $testFile -ErrorAction Stop
+    Remove-Item $testFile -ErrorAction Stop
+}
+catch {
+    Write-Output "ERROR: Cannot use temp directory $TempDir. Error: $_"
+    Write-Output "Falling back to console output for logging."
+    $LogFile = $null
+}
+
+# Custom logging function to handle both local file and console output, with SharePoint upload later
+function Write-Log {
+    param([string]$Message)
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $logMessage = "$timestamp $Message"
+    if ($LogFile) {
+        try {
+            Add-Content -Path $LogFile -Value $logMessage -ErrorAction Stop
+        }
+        catch {
+            Write-Output "Failed to write to log file: $_"
+            Write-Output $logMessage
+        }
+    }
+    else {
+        Write-Output $logMessage
+    }
+}
+
+Write-Log "Script started."
+
+# Connect to SharePoint
+try {
+    Import-Module PnP.PowerShell -ErrorAction Stop
+    Connect-PnPOnline -Url $SharePointSiteUrl -Credentials $SharePointCredential -ErrorAction Stop
+    Write-Log "Connected to SharePoint site: $SharePointSiteUrl"
+}
+catch {
+    Write-Log "ERROR: Failed to connect to SharePoint. Error: $_"
+    Write-Log "Falling back to local logging only."
+}
+
+# Only run Monday-Friday (skip weekends)
+if ((Get-Date).DayOfWeek -in 'Saturday', 'Sunday') {
+    Write-Log "Script not run: Today is a weekend."
+    exit
+}
+
+try {
+    # Create SFTP session
+    $SFTPSession = New-SFTPSession -ComputerName $SftpHost -Credential $Credential -AcceptKey
+    Write-Log "SFTP session established to $SftpHost."
+
+    # List files in the remote folder for debugging
+    $files = Get-SFTPChildItem -SessionId $SFTPSession.SessionId -Path $RemoteHosFolder
+    Write-Log "Listed files in $RemoteHosFolder. Total files: $($files.Count)"
+    
+    # Log details of each file for debugging (e.g., to check LastWriteTime)
+    foreach ($file in $files) {
+        Write-Log "File: $($file.Name), LastWriteTime: $($file.LastWriteTime)"
+    }
+
+    # Find test_sample.txt with today's date, comparing only date components
+    $today = (Get-Date)
+    $hosFile = $files | Where-Object { 
+        $_.Name -eq "test_sample.txt" -and 
+        $_.LastWriteTime.Year -eq $today.Year -and 
+        $_.LastWriteTime.Month -eq $today.Month -and 
+        $_.LastWriteTime.Day -eq $today.Day
+    }
+
+    if ($hosFile) {
+        $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+        $localTemp = Join-Path $TempDir "test_sample.txt"
+        $backupFileName = "test_sample.txt-$timestamp"
+
+        # Download test_sample.txt from remote server to local temp
+        try {
+            Get-SFTPItem -SessionId $SFTPSession.SessionId -Path "$RemoteHosFolder/test_sample.txt" -Destination $localTemp -ErrorAction Stop
+            Write-Log "Downloaded test_sample.txt to $localTemp. File LastWriteTime: $($hosFile.LastWriteTime)"
+        }
+        catch {
+            Write-Log "ERROR: Failed to download test_sample.txt from $RemoteHosFolder/test_sample.txt to $localTemp. Error: $_"
+            throw
+        }
+
+        # Upload to backup folder with a new timestamped filename (renaming happens via Destination parameter)
+        try {
+            Set-SFTPItem -SessionId $SFTPSession.SessionId -Path $localTemp -Destination "$RemoteBackupFolder/$backupFileName" -ErrorAction Stop
+            Write-Log "Uploaded $localTemp to $RemoteBackupFolder/$backupFileName. File renamed on remote server to include timestamp."
+        }
+        catch {
+            Write-Log "ERROR: Failed to upload $localTemp to $RemoteBackupFolder/$backupFileName. Error: $_"
+        }
+
+        # Clean up local temp file
+        try {
+            Remove-Item $localTemp -ErrorAction Stop
+            Write-Log "Removed local temp file $localTemp."
+        }
+        catch {
+            Write-Log "WARNING: Failed to remove local temp file $localTemp. Error: $_"
+        }
+    } else {
+        Write-Log "test_sample.txt not found or not updated today (based on date components)."
+        # Send email notification if file is missing or not updated for today
+        try {
+            Send-MailMessage -SmtpServer $SmtpServer -Port $SmtpPort -UseSsl -Credential $SmtpCredential -From $EmailFrom -To $EmailTo -Subject $EmailSubject -Body $EmailBody -ErrorAction Stop
+            Write-Log "Email notification sent to $EmailTo regarding missing file test_sample.txt."
+        }
+        catch {
+            Write-Log "ERROR: Failed to send email notification. Error: $_"
+        }
+    }
+
+    # Remove SFTP session
+    try {
+        Remove-SFTPSession -SessionId $SFTPSession.SessionId -ErrorAction Stop
+        Write-Log "SFTP session closed."
+    }
+    catch {
+        Write-Log "WARNING: Failed to close SFTP session. Error: $_"
+    }
+}
+catch {
+    Write-Log "ERROR: An unexpected error occurred: $_"
+}
+
+# Upload log file to SharePoint
+try {
+    if ($LogFile -and (Test-Path $LogFile)) {
+        $logFileName = Split-Path $LogFile -Leaf
+        $destinationPath = "$SharePointFolder/$logFileName"
+        Add-PnPFile -Path $LogFile -Folder "$SharePointLibrary/$SharePointFolder" -ErrorAction Stop
+        Write-Log "Log file uploaded to SharePoint: $SharePointLibrary/$destinationPath"
+        # Optionally, remove local log file after upload
+        Remove-Item $LogFile -ErrorAction Stop
+        Write-Output "Local log file removed after upload to SharePoint."
+    }
+    else {
+        Write-Log "WARNING: Log file not found or not created. Skipping SharePoint upload."
+    }
+}
+catch {
+    Write-Log "ERROR: Failed to upload log file to SharePoint. Error: $_"
+}
+
+# Disconnect from SharePoint
+try {
+    Disconnect-PnPOnline -ErrorAction Stop
+    Write-Log "Disconnected from SharePoint."
+}
+catch {
+    Write-Log "WARNING: Failed to disconnect from SharePoint. Error: $_"
+}
+
+Write-Log "Script finished."
+if ($LogFile) {
+    Write-Output "Log file was created locally at: $LogFile (and uploaded to SharePoint if successful)."
+}
