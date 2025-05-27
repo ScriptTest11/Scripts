@@ -1,0 +1,72 @@
+# Import the CSV file
+$csvPath = "C:\Path\To\Your\File.csv"  # Replace with your CSV file path
+$employees = Import-Csv -Path $csvPath
+
+# Initialize an array to store validation messages
+$validationMessages = @()
+
+# Email configuration
+$smtpServer = "your-smtp-server"  # Replace with your SMTP server
+$fromAddress = "sender@yourdomain.com"  # Replace with sender email
+$toAddress = "recipient@yourdomain.com"  # Replace with recipient email
+$subject = "Missing Mandatory Fields Report"
+
+# Loop through each employee record
+foreach ($employee in $employees) {
+    $missingFields = @()
+    
+    # Check BusinessUnit
+    if ([string]::IsNullOrWhiteSpace($employee.BusinessUnit)) {
+        $missingFields += "BusinessUnit"
+    }
+    
+    # Check Employee Id
+    if ([string]::IsNullOrWhiteSpace($employee.'Employee Id')) {
+        $missingFields += "Employee Id"
+    }
+    
+    # Check Manager Id
+    if ([string]::IsNullOrWhiteSpace($employee.'Manager Id')) {
+        $missingFields += "Manager Id"
+    }
+    
+    # If any mandatory fields are missing, add to validation messages
+    if ($missingFields.Count -gt 0) {
+        $message = "Missing fields ($($missingFields -join ', ')) for employee: $($employee.FirstName) $($employee.LastName)"
+        $validationMessages += $message
+    }
+}
+
+# If there are validation messages, send email
+if ($validationMessages.Count -gt 0) {
+    # Prepare email body
+    $emailBody = "The following records have missing mandatory fields:`n`n"
+    $emailBody += $validationMessages | ForEach-Object { "$_`n" }
+    
+    # Create email parameters
+    $emailParams = @{
+        From = $fromAddress
+        To = $toAddress
+        Subject = $subject
+        Body = $emailBody
+        SmtpServer = $smtpServer
+    }
+    
+    # Send email
+    try {
+        Send-MailMessage @emailParams -ErrorAction Stop
+        Write-Host "Email sent successfully with validation messages."
+    }
+    catch {
+        Write-Host "Failed to send email: $_"
+    }
+}
+else {
+    Write-Host "No validation issues found."
+}
+
+# Also display the messages in console
+if ($validationMessages.Count -gt 0) {
+    Write-Host "`nValidation Messages:"
+    $validationMessages | ForEach-Object { Write-Host $_ }
+}
