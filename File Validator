@@ -70,3 +70,66 @@ if ($validationMessages.Count -gt 0) {
     Write-Host "`nValidation Messages:"
     $validationMessages | ForEach-Object { Write-Host $_ }
 }
+
+
+
+
+
+
+
+
+
+-------------------------------------------------------------------------
+
+
+
+# Import the CSV file
+$csvPath = ""  # Replace with your CSV file path
+$employees = Import-Csv -Path $csvPath
+
+# Initialize an array to store validation messages
+$validationMessages = @()
+
+# Loop through each employee record
+foreach ($employee in $employees) {
+    $missingFields = @()
+    
+    # Check BusinessUnit
+    if ([string]::IsNullOrWhiteSpace($employee.BusinessUnit)) {
+        $missingFields += "BusinessUnit"
+    }
+    
+    # Check Employee Id
+    if ([string]::IsNullOrWhiteSpace($employee.'EmployeeId')) {
+        $missingFields += "EmployeeId"
+    }
+    
+    # Check Manager Id
+    if ([string]::IsNullOrWhiteSpace($employee.'ManagerId')) {
+        $missingFields += "ManagerId"
+    }
+    
+    # If any mandatory fields are missing, add to validation messages
+    if ($missingFields.Count -gt 0) {
+        $message = "Missing fields ($($missingFields -join ', ')) for employee: $($employee.FirstName) $($employee.LastName)"
+        $validationMessages += $message
+    }
+}
+
+# Display validation results
+Write-Host "`n=== Missing Mandatory Fields Report ===" -ForegroundColor Cyan
+Write-Host "Timestamp: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor Cyan
+Write-Host "----------------------------------------`n"
+
+if ($validationMessages.Count -gt 0) {
+    Write-Host "Found $($validationMessages.Count) record(s) with missing mandatory fields:" -ForegroundColor Yellow
+    foreach ($message in $validationMessages) {
+        Write-Host "- $message" -ForegroundColor Red
+    }
+}
+else {
+    Write-Host "No validation issues found. All mandatory fields are populated." -ForegroundColor Green
+}
+
+Write-Host "`n----------------------------------------"
+Write-Host "End of Report" -ForegroundColor Cyan
