@@ -1,3 +1,122 @@
+//(EmployeeValidator.psm1)
+function Start-EmployeeValidation {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory=$true)]
+        [string]$CsvFilePath,
+        
+        [Parameter(Mandatory=$true)]
+        [string]$SmtpServer,
+        
+        [Parameter(Mandatory=$true)]
+        [string]$FromAddress,
+        
+        [Parameter(Mandatory=$true)]
+        [string]$ToAddress,
+        
+        [Parameter(Mandatory=$false)]
+        [string[]]$CcAddress = @(),
+        
+        [Parameter(Mandatory=$false)]
+        [string]$Subject = "Missing Mandatory Fields Report"
+    )
+
+    Write-Host "Starting employee validation for: $CsvFilePath"
+
+    # Validate file exists
+    if (-not (Test-Path -Path $CsvFilePath)) {
+        Write-Error "CSV file not found at path: $CsvFilePath"
+        return 1
+    }
+
+    # Import CSV
+    try {
+        $employees = Import-Csv -Path $CsvFilePath -ErrorAction Stop
+    }
+    catch {
+        Write-Error "Failed to import CSV file: $_"
+        return 1
+    }
+
+    # Define mandatory fields
+    $mandatoryFields = @(
+        "BusinessUnit",
+        "Employee Id",
+        "Manager Id"
+    )
+
+    # Validate records
+    $validationMessages = @()
+    foreach ($employee in $employees) {
+        $missingFields = @()
+        
+        foreach ($field in $mandatoryFields) {
+            if ([string]::IsNullOrWhiteSpace($employee.$field)) {
+                $missingFields += $field
+            }
+        }
+        
+        if ($missingFields.Count -gt 0) {
+            $message = "Missing fields ($($missingFields -join ', ')) for employee: $($employee.FirstName) $($employee.LastName)"
+            $validationMessages += $message
+        }
+    }
+
+    # Send email if issues found
+    if ($validationMessages.Count -gt 0) {
+        # Create email body
+        $emailBody = "EMPLOYEE DATA VALIDATION REPORT`n"
+        $emailBody += "Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')`n"
+        $emailBody += "----------------------------------------`n`n"
+        $emailBody += "The following records have missing mandatory fields:`n`n"
+        
+        foreach ($message in $validationMessages) {
+            $emailBody += "- $message`n"
+        }
+        
+        $emailBody += "`n----------------------------------------`n"
+        $emailBody += "Please update these records as soon as possible.`n"
+        $emailBody += "This is an automated message. Do not reply."
+        
+        # Create email parameters
+        $emailParams = @{
+            From = $FromAddress
+            To = $ToAddress
+            Subject = $Subject
+            Body = $emailBody
+            SmtpServer = $SmtpServer
+        }
+        
+        # Add CC if provided
+        if ($CcAddress.Count -gt 0) {
+            $emailParams.Add("Cc", $CcAddress)
+        }
+        
+        # Send email
+        try {
+            Send-MailMessage @emailParams -ErrorAction Stop
+            Write-Host "Email sent successfully with $($validationMessages.Count) validation issues."
+            return 0
+        }
+        catch {
+            Write-Error "Failed to send email: $_"
+            return 1
+        }
+    }
+    else {
+        Write-Host "No validation issues found. All mandatory fields are populated."
+        return 0
+    }
+}
+
+# Export the function so it's available when the module is imported
+Export-ModuleMember -Function Start-EmployeeValidation
+
+
+
+-------------------------------------------------------------
+
+
 param (
     [Parameter(Mandatory=$true)]
     [string]$CsvFilePath,
@@ -6,123 +125,27 @@ param (
     [string]$SmtpServer,
     
     [Parameter(Mandatory=$true)]
-    [string]$FromAddress,
+    [string]$FromEmail,
     
     [Parameter(Mandatory=$true)]
-    [string]$ToAddress,
+    [string]$ToEmail,
     
     [Parameter(Mandatory=$false)]
-    [string[]]$CcAddress = @(),
+    [string[]]$CcEmails = @(),
     
     [Parameter(Mandatory=$false)]
-    [string]$Subject = "Missing Mandatory Fields Report"
+    [string]$Subject = "Azure DevOps - Employee Validation Report"
 )
 
-Write-Host "Starting employee validation for: $CsvFilePath"
-
-# Validate file exists
-if (-not (Test-Path -Path $CsvFilePath)) {
+# Check if CSV file exists
+if (Test-Path -Path $CsvFilePath) {
+    # Import the module from the same directory as this script
+    Import-Module -Name "$PSScriptRoot\EmployeeValidator.psm1" -Force
+    
+    # Call the validation function with parameters
+    Start-EmployeeValidation -CsvFilePath $CsvFilePath -SmtpServer $SmtpServer -FromAddress $FromEmail -ToAddress $ToEmail -CcAddress $CcEmails -Subject $Subject
+}
+else {
     Write-Error "CSV file not found at path: $CsvFilePath"
     exit 1
 }
-
-# Import CSV
-try {
-    $employees = Import-Csv -Path $CsvFilePath -ErrorAction Stop
-}
-catch {
-    Write-Error "Failed to import CSV file: $_"
-    exit 1
-}
-
-# Validate records
-$validationMessages = @()
-foreach ($employee in $employees) {
-    $missingFields = @()
-    
-    if ([string]::IsNullOrWhiteSpace($employee.BusinessUnit)) {
-        $missingFields += "BusinessUnit"
-    }
-    
-    if ([string]::IsNullOrWhiteSpace($employee.'Employee Id')) {
-        $missingFields += "Employee Id"
-    }
-    
-    if ([string]::IsNullOrWhiteSpace($employee.'Manager Id')) {
-        $missingFields += "Manager Id"
-    }
-    
-    if ($missingFields.Count -gt 0) {
-        $message = "Missing fields ($($missingFields -join ', ')) for employee: $($employee.FirstName) $($employee.LastName)"
-        $validationMessages += $message
-    }
-}
-
-# Send email if issues found
-if ($validationMessages.Count -gt 0) {
-    # Create email body
-    $emailBody = "EMPLOYEE DATA VALIDATION REPORT`n"
-    $emailBody += "Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')`n"
-    $emailBody += "----------------------------------------`n`n"
-    $emailBody += "The following records have missing mandatory fields:`n`n"
-    
-    foreach ($message in $validationMessages) {
-        $emailBody += "- $message`n"
-    }
-    
-    $emailBody += "`n----------------------------------------`n"
-    $emailBody += "Please update these records as soon as possible.`n"
-    $emailBody += "This is an automated message. Do not reply."
-    
-    # Create email parameters
-    $emailParams = @{
-        From = $FromAddress
-        To = $ToAddress
-        Subject = $Subject
-        Body = $emailBody
-        SmtpServer = $SmtpServer
-    }
-    
-    # Add CC if provided
-    if ($CcAddress.Count -gt 0) {
-        $emailParams.Add("Cc", $CcAddress)
-    }
-    
-    # Send email
-    try {
-        Send-MailMessage @emailParams -ErrorAction Stop
-        Write-Host "Email sent successfully with $($validationMessages.Count) validation issues."
-        exit 0
-    }
-    catch {
-        Write-Error "Failed to send email: $_"
-        exit 1
-    }
-}
-else {
-    Write-Host "No validation issues found. All mandatory fields are populated."
-    exit 0
-}
-
-
--------------------------------------------------------------------------------------------------
-
-# Your existing Azure DevOps script
-# ...
-
-# Check if file exists
-if (Test-Path -Path $yourCsvPath) {
-    # Import the module (adjust path as needed)
-    Import-Module -Name "$PSScriptRoot\EmployeeValidator.psm1" -Force
-    
-    # Call the validation function with inline parameters
-    Start-EmployeeValidation -CsvFilePath $yourCsvPath `
-                            -SmtpServer $yourSmtpServer `
-                            -FromAddress $yourFromEmail `
-                            -ToAddress $yourToEmail `
-                            -CcAddress $yourCcEmails `
-                            -Subject "Azure DevOps - Employee Validation Report"
-}
-
-# Continue with your script
-# ...
