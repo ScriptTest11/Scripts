@@ -1,135 +1,128 @@
-# Import the CSV file
-$csvPath = "C:\Path\To\Your\File.csv"  # Replace with your CSV file path
-$employees = Import-Csv -Path $csvPath
+param (
+    [Parameter(Mandatory=$true)]
+    [string]$CsvFilePath,
+    
+    [Parameter(Mandatory=$true)]
+    [string]$SmtpServer,
+    
+    [Parameter(Mandatory=$true)]
+    [string]$FromAddress,
+    
+    [Parameter(Mandatory=$true)]
+    [string]$ToAddress,
+    
+    [Parameter(Mandatory=$false)]
+    [string[]]$CcAddress = @(),
+    
+    [Parameter(Mandatory=$false)]
+    [string]$Subject = "Missing Mandatory Fields Report"
+)
 
-# Initialize an array to store validation messages
+Write-Host "Starting employee validation for: $CsvFilePath"
+
+# Validate file exists
+if (-not (Test-Path -Path $CsvFilePath)) {
+    Write-Error "CSV file not found at path: $CsvFilePath"
+    exit 1
+}
+
+# Import CSV
+try {
+    $employees = Import-Csv -Path $CsvFilePath -ErrorAction Stop
+}
+catch {
+    Write-Error "Failed to import CSV file: $_"
+    exit 1
+}
+
+# Validate records
 $validationMessages = @()
-
-# Email configuration
-$smtpServer = "your-smtp-server"  # Replace with your SMTP server
-$fromAddress = "sender@yourdomain.com"  # Replace with sender email
-$toAddress = "recipient@yourdomain.com"  # Replace with recipient email
-$subject = "Missing Mandatory Fields Report"
-
-# Loop through each employee record
 foreach ($employee in $employees) {
     $missingFields = @()
     
-    # Check BusinessUnit
     if ([string]::IsNullOrWhiteSpace($employee.BusinessUnit)) {
         $missingFields += "BusinessUnit"
     }
     
-    # Check Employee Id
     if ([string]::IsNullOrWhiteSpace($employee.'Employee Id')) {
         $missingFields += "Employee Id"
     }
     
-    # Check Manager Id
     if ([string]::IsNullOrWhiteSpace($employee.'Manager Id')) {
         $missingFields += "Manager Id"
     }
     
-    # If any mandatory fields are missing, add to validation messages
     if ($missingFields.Count -gt 0) {
         $message = "Missing fields ($($missingFields -join ', ')) for employee: $($employee.FirstName) $($employee.LastName)"
         $validationMessages += $message
     }
 }
 
-# If there are validation messages, send email
+# Send email if issues found
 if ($validationMessages.Count -gt 0) {
-    # Prepare email body
-    $emailBody = "The following records have missing mandatory fields:`n`n"
-    $emailBody += $validationMessages | ForEach-Object { "$_`n" }
+    # Create email body
+    $emailBody = "EMPLOYEE DATA VALIDATION REPORT`n"
+    $emailBody += "Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')`n"
+    $emailBody += "----------------------------------------`n`n"
+    $emailBody += "The following records have missing mandatory fields:`n`n"
+    
+    foreach ($message in $validationMessages) {
+        $emailBody += "- $message`n"
+    }
+    
+    $emailBody += "`n----------------------------------------`n"
+    $emailBody += "Please update these records as soon as possible.`n"
+    $emailBody += "This is an automated message. Do not reply."
     
     # Create email parameters
     $emailParams = @{
-        From = $fromAddress
-        To = $toAddress
-        Subject = $subject
+        From = $FromAddress
+        To = $ToAddress
+        Subject = $Subject
         Body = $emailBody
-        SmtpServer = $smtpServer
+        SmtpServer = $SmtpServer
+    }
+    
+    # Add CC if provided
+    if ($CcAddress.Count -gt 0) {
+        $emailParams.Add("Cc", $CcAddress)
     }
     
     # Send email
     try {
         Send-MailMessage @emailParams -ErrorAction Stop
-        Write-Host "Email sent successfully with validation messages."
+        Write-Host "Email sent successfully with $($validationMessages.Count) validation issues."
+        exit 0
     }
     catch {
-        Write-Host "Failed to send email: $_"
+        Write-Error "Failed to send email: $_"
+        exit 1
     }
 }
 else {
-    Write-Host "No validation issues found."
-}
-
-# Also display the messages in console
-if ($validationMessages.Count -gt 0) {
-    Write-Host "`nValidation Messages:"
-    $validationMessages | ForEach-Object { Write-Host $_ }
+    Write-Host "No validation issues found. All mandatory fields are populated."
+    exit 0
 }
 
 
+-------------------------------------------------------------------------------------------------
 
+# Your existing Azure DevOps script
+# ...
 
-
-
-
-
-
--------------------------------------------------------------------------
-
-
-
-# Import the CSV file
-$csvPath = ""  # Replace with your CSV file path
-$employees = Import-Csv -Path $csvPath
-
-# Initialize an array to store validation messages
-$validationMessages = @()
-
-# Loop through each employee record
-foreach ($employee in $employees) {
-    $missingFields = @()
+# Check if file exists
+if (Test-Path -Path $yourCsvPath) {
+    # Import the module (adjust path as needed)
+    Import-Module -Name "$PSScriptRoot\EmployeeValidator.psm1" -Force
     
-    # Check BusinessUnit
-    if ([string]::IsNullOrWhiteSpace($employee.BusinessUnit)) {
-        $missingFields += "BusinessUnit"
-    }
-    
-    # Check Employee Id
-    if ([string]::IsNullOrWhiteSpace($employee.'EmployeeId')) {
-        $missingFields += "EmployeeId"
-    }
-    
-    # Check Manager Id
-    if ([string]::IsNullOrWhiteSpace($employee.'ManagerId')) {
-        $missingFields += "ManagerId"
-    }
-    
-    # If any mandatory fields are missing, add to validation messages
-    if ($missingFields.Count -gt 0) {
-        $message = "Missing fields ($($missingFields -join ', ')) for employee: $($employee.FirstName) $($employee.LastName)"
-        $validationMessages += $message
-    }
+    # Call the validation function with inline parameters
+    Start-EmployeeValidation -CsvFilePath $yourCsvPath `
+                            -SmtpServer $yourSmtpServer `
+                            -FromAddress $yourFromEmail `
+                            -ToAddress $yourToEmail `
+                            -CcAddress $yourCcEmails `
+                            -Subject "Azure DevOps - Employee Validation Report"
 }
 
-# Display validation results
-Write-Host "`n=== Missing Mandatory Fields Report ===" -ForegroundColor Cyan
-Write-Host "Timestamp: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor Cyan
-Write-Host "----------------------------------------`n"
-
-if ($validationMessages.Count -gt 0) {
-    Write-Host "Found $($validationMessages.Count) record(s) with missing mandatory fields:" -ForegroundColor Yellow
-    foreach ($message in $validationMessages) {
-        Write-Host "- $message" -ForegroundColor Red
-    }
-}
-else {
-    Write-Host "No validation issues found. All mandatory fields are populated." -ForegroundColor Green
-}
-
-Write-Host "`n----------------------------------------"
-Write-Host "End of Report" -ForegroundColor Cyan
+# Continue with your script
+# ...
