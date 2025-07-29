@@ -1,0 +1,55 @@
+
+param (
+    [Parameter(Mandatory=$true)]
+    [string]$CsvFilePath,  # Path to your input CSV file
+
+    [Parameter(Mandatory=$false)]
+    [string]$LogFilePath = "update_log.txt"  # Path for output log file (defaults to current directory)
+)
+Import Active Directory module
+
+
+function Update-AndLog {
+    param (
+        [string]$UserIdentity,
+        [string]$NewTargetAddress,
+        [string]$LogPath
+    )
+
+    try {
+        # Update the attribute
+        Set-ADUser -Identity $UserIdentity -Replace @{targetAddress = $NewTargetAddress} -ErrorAction Stop
+        $message = "Successfully updated targetAddress for $UserIdentity to $NewTargetAddress."
+
+        # Verify the change
+        $updatedUser = Get-ADUser -Identity $UserIdentity -Properties targetAddress
+        $message += " Verification: Current targetAddress is $($updatedUser.targetAddress)"
+
+        # Log it
+        Add-Content -Path $LogPath -Value $message
+        Write-Host $message
+    }
+    catch {
+        $errorMessage = "Failed to update $UserIdentity. Error: $_"
+        Add-Content -Path $LogPath -Value $errorMessage
+        Write-Error $errorMessage
+    }
+}
+
+# Read the CSV file
+if (Test-Path $CsvFilePath) {
+    $users = Import-Csv -Path $CsvFilePath
+    Write-Host "Loaded $($users.Count) users from $CsvFilePath."
+
+    # Initialize log file
+    "Update Log - $(Get-Date)" | Out-File -FilePath $LogFilePath
+
+    # Process each user
+    foreach ($user in $users) {
+        Update-AndLog -UserIdentity $user.UserIdentity -NewTargetAddress $user.NewTargetAddress -LogPath $LogFilePath
+    }
+
+    Write-Host "Processing complete. Check $LogFilePath for full details."
+} else {
+    Write-Error "CSV file not found at $CsvFilePath. Please check the path."
+}
