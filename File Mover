@@ -1,0 +1,110 @@
+//File Mover
+
+Install-Module -Name Posh-SSH -Force -Scope CurrentUser -AllowClobber
+Import-Module Posh-SSH
+
+function Run-SOURCE-FileMover {
+   param (
+     [string]$password,
+     [string]$sftpUser,
+     [string]$sftpHost,
+     [string]$SOURCEFolder,
+     [string]$SOURCEbackupFolder,
+     [string]$SOURCEFileName,
+     [string]$emailFrom,
+     [string]$SOURCEemailTo,
+     [string]$sailpointTeamCC
+    )
+
+    $sailpointTeamCCArray = $sailpointTeamCC -split ',' | Where-Object { $_.Trim() -ne '' } | ForEach-Object { $_.Trim() }
+    $SOURCEemailToArray = $SOURCEemailTo -split ',' | Where-Object { $_.Trim() -ne '' } | ForEach-Object { $_.Trim() }
+    Write-Host $SOURCEemailToArray
+
+    $smtpServer = ""
+    $SecurePass = ConvertTo-SecureString $password -AsPlainText -Force
+    $Credential = New-Object System.Management.Automation.PSCredential ($sftpUser, $SecurePass)
+
+    $TempDir = "$env:TEMP\SFTPTemp"
+    if (!(Test-Path -Path $TempDir)) {
+        New-Item -Path $TempDir -ItemType Directory -Force | Out-Null
+    }
+
+    Write-Host "Script started."
+
+    try {
+        $SFTPSession = New-SFTPSession -ComputerName $sftpHost -Credential $Credential -AcceptKey
+        Write-Host "SFTP session established to $sftpHost."
+       
+        $files = Get-SFTPChildItem -SessionId $SFTPSession.SessionId -Path $SOURCEFolder
+        Write-Host "Connected $SOURCEFolder."
+        
+        $today = (Get-Date).Date
+        $SOURCEFile = $files | Where-Object {
+            $_.Name -eq "$SOURCEFileName" -and
+            $_.LastWriteTime.Date -eq $today
+        }
+
+        if ($SOURCEFile) {
+            $timestamp = Get-Date -Format "yyyyMMddHHmmss"
+            $backupFileName = "$SOURCEFileName-$timestamp"
+            $localFilePath = Join-Path $TempDir $SOURCEFileName
+            $backupFilePath = Join-Path $TempDir $backupFileName
+
+            Get-SFTPItem -SessionId $SFTPSession.SessionId -Path "$SOURCEFolder/$SOURCEFileName" -Destination $TempDir
+            Write-Host "Downloaded $SOURCEFileName to $localFilePath."
+            
+            Rename-Item -Path $localFilePath -NewName $backupFileName
+            Write-Host "File renamed to $backupFileName."
+
+            Set-SFTPItem -SessionId $SFTPSession.SessionId -Path $backupFilePath -Destination "$SOURCEbackupFolder"
+            Write-Host "Uploaded $backupFilePath to $SOURCEbackupFolder/$backupFileName."
+
+            $mandatoryFields = @(
+               "EMPLOYEENUMBER",
+                "LAST_NAME",
+                "FIRST_NAME",
+                "COUNTRY",
+                "DIVISION",
+                "BUSINESS_UNIT",
+                "DEPARTMENT",
+                "BSV_CCL_DEPT",
+                "PRIMARY_MANAGER",
+                "PRIMARY_MANAGER_EMPLOYEE_NUMBER",
+                "JOB_FAMILY",
+                "SALARY___HOURLY",
+                "HIRE_DATE",
+                "EMPLOYEE_STATUS",
+                "EFFECTIVE_START_DATE",
+                "DISPLAY_NAME",
+                "USER_NAME"
+            )
+
+            $SOURCESubject = "SailPoint - SOURCE HR File Validation $today" 
+            Import-Module -Name "D:\a\_work\1\s\SailPoint\FileValidator.psm1" -Force
+            Start-EmployeeValidation -CsvFilePath $backupFilePath.Trim() -SmtpServer $smtpServer -FromAddress $emailFrom -ToAddress $SOURCEemailTo -CcAddress $sailpointTeamCC -Subject $SOURCESubject -MandatoryFields $mandatoryFields
+
+            Remove-Item $backupFilePath -Force
+            Write-Host "Removed local temp file $backupFilePath."
+
+            $subject = "SOURCE File Received"
+            $body = "<p>Hello Team,</p><p>The file - <strong>$SOURCEFileName</strong> was successfully received and backed up on <strong>$(Get-Date -Format 'yyyy-MM-dd')</strong>.</p><p>Thank you,</p><p>Rheem Cybersecurity Team</p>"
+            Send-MailMessage -From $emailFrom -To $sailpointTeamCCArray -Subject $subject -Body $body -BodyAsHtml -SmtpServer $smtpServer
+            Write-Host "Success email sent."
+          
+        } else {
+            Write-Host "$SOURCEFileName not received today."
+
+            $subject = "SailPoint - SOURCE HR File Missing Notification"
+            $body = "<p>Hello Team,</p><p>This is a reminder that the file '<strong>FILENAME.csv</strong>' was not received on <strong>$(Get-Date -Format 'yyyy-MM-dd')</strong>.</p><p>Please upload the file to the SFTP server at your earliest convenience. If you experience any issues or need assistance, please contact the SailPoint team.</p><p>Thank you for your attention.</p><br><p>Thank You<br>Cybersecurity Team</p>"
+            Send-MailMessage -From $emailFrom -To $SOURCEemailToArray -Cc $sailpointTeamCCArray -Subject $subject -Body $body -BodyAsHtml -SmtpServer $smtpServer
+            Write-Host "File not received email sent"
+        }
+        Remove-SFTPSession -SessionId $SFTPSession.SessionId
+        Write-Host "SFTP session closed."
+    }
+    catch {
+        Write-Host "ERROR: $_"
+    }
+    Write-Host "Script Completed."
+}
+Run-SOURCE-FileMover -password $args[0] -sftpUser $args[1] -sftpHost $args[2] -SOURCEFolder $args[3] -SOURCEbackupFolder $args[4] -SOURCEFileName $args[5] -emailFrom $args[6] -SOURCEemailTo $args[7] -sailpointTeamCC $args[8]
