@@ -1,0 +1,32 @@
+Import-Module ActiveDirectory
+
+# Define output CSV path
+$outputCsv = "ADUsers_WithEmployeeId.csv"
+
+# Define properties to retrieve
+$properties = @(
+    'Country',
+    'DistinguishedName',
+    'employeeId',
+    'employeeNumber',
+    'extensionAttribute8',
+    'givenName',
+    'sn',
+    'mail',
+    'name',
+    'samAccountName',
+    'targetAddress',
+    'userAccountControl',
+    'userPrincipalName',
+    'whenCreated',
+    'whenChanged',
+    'msExchRecipientTypeDetails'
+)
+
+# Get users with non-empty employeeId
+$users = Get-ADUser -Filter { employeeId -like "*" } -Properties $properties
+
+# Select and export
+$users | Select-Object $properties | Export-Csv -Path $outputCsv -NoTypeInformation -Encoding UTF8
+
+Write-Host "Export completed. File saved to $outputCsv"
