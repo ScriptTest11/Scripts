@@ -1,0 +1,105 @@
+//file validator
+
+function Start-EmployeeValidation {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory=$true)]
+        [string]$CsvFilePath,
+        
+        [Parameter(Mandatory=$true)]
+        [string]$SmtpServer,
+        
+        [Parameter(Mandatory=$true)]
+        [string]$FromAddress,
+        
+        [Parameter(Mandatory=$true)]
+        [string]$ToAddress,
+        
+        [Parameter(Mandatory=$false)]
+        [string[]]$CcAddress = @(),
+        
+        [Parameter(Mandatory=$true)]
+        [string]$Subject = "Missing Mandatory Fields Report",
+
+        [Parameter(Mandatory=$true)]
+        [string[]]$MandatoryFields = @()
+    )
+
+    Write-Host "Starting employee validation for: $CsvFilePath"
+    Test-Path -Path $CsvFilePath
+
+    try {
+        $employees = Import-Csv -Path $CsvFilePath -ErrorAction Stop
+    }
+    catch {
+        Write-Error "Failed to import CSV file: $_"
+        return 1
+    }
+
+    $validationMessages = @()
+    foreach ($employee in $employees) {
+        $missingFields = @()
+        
+        foreach ($field in $mandatoryFields) {
+            if ([string]::IsNullOrWhiteSpace($employee.$field)) {
+                $missingFields += $field
+            }
+        }
+        
+        if ($missingFields.Count -gt 0 -and $Subject.Contains("Tress")) {
+            $message = "Missing fields ($($missingFields -join ', ')) for employee: $($employee.PREFERRED_FIRST_NAME) $($employee.PREFERRED_LAST_NAME)"
+            $validationMessages += $message
+        } elseif ($missingFields.Count -gt 0 -and $Subject.Contains("HCM")) {
+            $message = "Missing fields ($($missingFields -join ', ')) for employee: $($employee.FIRST_NAME) $($employee.LAST_NAME)"
+            $validationMessages += $message
+        }elseif ($missingFields.Count -gt 0 -and $Subject.Contains("Prodensa")) {
+            $message = "Missing fields ($($missingFields -join ', ')) for employee: $($employee.Preferred_First_Name) $($employee.Preferred_Last_Name)"
+            $validationMessages += $message
+        }
+    }
+
+    if ($validationMessages.Count -gt 0) {
+        $emailBody = "SailPoint HR File Validation Report`n"
+        $emailBody += "Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')`n"
+        $emailBody += "----------------------------------------`n`n"
+        $emailBody += "The following employee records have missing mandatory fields:`n`n"
+        
+        foreach ($message in $validationMessages) {
+            $emailBody += "- $message`n"
+        }
+        
+        $emailBody += "`n----------------------------------------`n"
+        $emailBody += "Please update these records as soon as possible.`n"
+        
+        $CCArray = $CcAddress -split ',' | Where-Object { $_.Trim() -ne '' } | ForEach-Object { $_.Trim() }
+        $ToArray = $ToAddress -split ',' | Where-Object { $_.Trim() -ne '' } | ForEach-Object { $_.Trim() }
+
+        $emailParams = @{
+            From = $FromAddress
+            To = $ToArray
+            Subject = $Subject
+            Body = $emailBody
+            SmtpServer = $SmtpServer
+        }
+
+        if ($CcAddress.Count -gt 0) {
+            $emailParams.Add("Cc", $CCArray)
+        }
+
+        try {
+            Send-MailMessage @emailParams -ErrorAction Stop
+            Write-Host "Email sent successfully with $($validationMessages.Count) validation issues."
+            return 0
+        }
+        catch {
+            Write-Error "Failed to send email: $_"
+            return 1
+        }
+    }
+    else {
+        Write-Host "No validation issues found. All mandatory fields are populated."
+        return 0
+    }
+}
+
+Export-ModuleMember -Function Start-EmployeeValidation
