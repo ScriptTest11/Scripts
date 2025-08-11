@@ -1,0 +1,106 @@
+Import-Module ActiveDirectory
+
+# Prompt for username
+$username = Read-Host -Prompt 'Enter username (domain\username or UPN)'
+
+# Prompt for password as secure string
+$password = Read-Host -Prompt 'Enter password' -AsSecureString
+
+# Create credential object
+$cred = New-Object System.Management.Automation.PSCredential ($username, $password)
+
+# Path to the CSV file
+$csvPath = "C:\Path\To\users.csv"
+# Path to output CSV for users not found
+$notFoundCsvPath = "C:\Path\To\UsersNotFound.csv"
+# Path to output CSV for users updated
+$updatedUsersCsvPath = "C:\Path\To\UsersUpdated.csv"
+# Path to output CSV for validation failures
+$validationFailuresCsvPath = "C:\Path\To\ValidationFailures.csv"
+
+# Import CSV data
+$users = Import-Csv -Path $csvPath
+
+# Arrays to hold users not found, updated, and validation failures
+$usersNotFound = @()
+$usersUpdated = @()
+$validationFailures = @()
+
+Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [INFO] Starting targetAddress update process. Total users to process: $($users.Count)"
+
+foreach ($user in $users) {
+    $dn = $user.DistinguishedName
+    $empId = $user.EmployeeID
+    $newTargetAddress = $user.NewTargetAddress
+
+    Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [INFO] Processing user DN: $dn, EmployeeID: $empId"
+
+    # Validate user exists by DN using provided credentials
+    try {
+        $adUser = Get-ADUser -Identity $dn -Properties employeeID,targetAddress -Credential $cred
+        Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [INFO] User found in AD."
+    } catch {
+        Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [WARN] User with DN '$dn' not found in AD. Adding to not found list."
+        $usersNotFound += [PSCustomObject]@{
+            DistinguishedName = $dn
+            EmployeeID = $empId
+        }
+        continue
+    }
+
+    # Validate employee ID matches
+    if ($adUser.employeeID -ne $empId) {
+        Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [WARN] EmployeeID mismatch for user '$dn'. Expected: $empId, Found: $($adUser.employeeID). Skipping update."
+
+        # Log validation failure
+        $validationFailures += [PSCustomObject]@{
+            DistinguishedName = $dn
+            ExpectedEmployeeID = $empId
+            ActualEmployeeID = $adUser.employeeID
+            Timestamp = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+        }
+        continue
+    }
+
+    # Update targetAddress using provided credentials
+    try {
+        Set-ADUser -Identity $dn -Replace @{targetAddress = $newTargetAddress} -Credential $cred
+        Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [INFO] Updated targetAddress for user '$dn' to '$newTargetAddress'."
+
+        # Add to updated users list
+        $usersUpdated += [PSCustomObject]@{
+            DistinguishedName = $dn
+            EmployeeID = $empId
+            NewTargetAddress = $newTargetAddress
+            UpdateTimestamp = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+        }
+    } catch {
+        Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [ERROR] Failed to update targetAddress for user '$dn'. Error: $_"
+    }
+}
+
+# Export users not found to CSV if any
+if ($usersNotFound.Count -gt 0) {
+    $usersNotFound | Export-Csv -Path $notFoundCsvPath -NoTypeInformation -Encoding UTF8
+    Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [INFO] Users not found have been exported to: $notFoundCsvPath"
+} else {
+    Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [INFO] All users were found in AD. No missing users to export."
+}
+
+# Export updated users to CSV if any
+if ($usersUpdated.Count -gt 0) {
+    $usersUpdated | Export-Csv -Path $updatedUsersCsvPath -NoTypeInformation -Encoding UTF8
+    Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [INFO] Updated users have been exported to: $updatedUsersCsvPath"
+} else {
+    Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [INFO] No users were updated."
+}
+
+# Export validation failures to CSV if any
+if ($validationFailures.Count -gt 0) {
+    $validationFailures | Export-Csv -Path $validationFailuresCsvPath -NoTypeInformation -Encoding UTF8
+    Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [INFO] EmployeeID validation failures have been exported to: $validationFailuresCsvPath"
+} else {
+    Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [INFO] No employeeID validation failures."
+}
+
+Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [INFO] Update process completed."
