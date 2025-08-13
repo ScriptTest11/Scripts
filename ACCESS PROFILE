@@ -1,3 +1,4 @@
+```powershell
 # Define variables - replace with your actual values
 $domain = 'identitynow.com'
 $tenant = 'sailpoint'
@@ -48,14 +49,24 @@ try {
     $profiles = Import-Csv -Path $inputCsvPath
 
     foreach ($profile in $profiles) {
-        # Build body dynamically
-        $body = @{}
-        foreach ($property in $profile.PSObject.Properties) {
-            $key = $property.Name
-            $value = $property.Value
-            $parsedValue = Convert-JsonField -field $value
-            $body[$key] = $parsedValue
+        # Build body according to updated JSON payload structure
+        $body = @{
+            name = $profile.name
+            description = $profile.description
+            enabled = [bool]$profile.enabled
+            requestable = [bool]$profile.requestable
         }
+
+        # Parse owner JSON string
+        $body.owner = Convert-JsonField -field $profile.owner
+
+        # Parse source JSON string
+        $body.source = Convert-JsonField -field $profile.source
+
+        # Parse entitlements JSON array string
+        $body.entitlements = Convert-JsonField -field $profile.entitlements
+
+        # Note: segments removed as per new payload example
 
         # Convert to JSON
         $jsonBody = $body | ConvertTo-Json -Depth 10
