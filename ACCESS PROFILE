@@ -1,0 +1,103 @@
+# Define variables - replace with your actual values
+$domain = 'identitynow.com'
+$tenant = 'sailpoint'
+$clientId = 'dummy-client-id'
+$clientSecret = 'dummy-client-secret'
+$inputCsvPath = 'input_access_profiles.csv'  # Input CSV file path
+$outputCsvPath = 'output_created_access_profiles.csv'  # Output CSV file path
+
+# Construct token URL
+$tokenUrl = "https://$tenant.api.$domain/oauth/token"
+
+# Prepare body for token request
+$tokenBody = @{ 
+    grant_type = 'client_credentials'
+    client_id = $clientId
+    client_secret = $clientSecret
+}
+
+# Function to safely parse JSON fields or return raw string
+function Convert-JsonField {
+    param([string]$field)
+    if ([string]::IsNullOrWhiteSpace($field)) { return $null }
+    try {
+        return $field | ConvertFrom-Json
+    } catch {
+        return $field
+    }
+}
+
+# Initialize list to collect output objects
+$outputObjects = @()
+
+try {
+    # Get OAuth token
+    Write-Host "Requesting OAuth token..."
+    $tokenResponse = Invoke-RestMethod -Method Post -Uri $tokenUrl -Body $tokenBody -ContentType 'application/x-www-form-urlencoded'
+
+    if (-not $tokenResponse.access_token) {
+        throw "Failed to retrieve access token."
+    }
+
+    $accessToken = $tokenResponse.access_token
+    $headers = @{ Authorization = "Bearer $accessToken" }
+    $apiUrl = 'https://sailpoint.api.identitynow.com/v3/access-profiles'
+
+    # Import CSV
+    Write-Host "Importing CSV data from $inputCsvPath"
+    $profiles = Import-Csv -Path $inputCsvPath
+
+    foreach ($profile in $profiles) {
+        # Build body dynamically
+        $body = @{}
+        foreach ($property in $profile.PSObject.Properties) {
+            $key = $property.Name
+            $value = $property.Value
+            $parsedValue = Convert-JsonField -field $value
+            $body[$key] = $parsedValue
+        }
+
+        # Convert to JSON
+        $jsonBody = $body | ConvertTo-Json -Depth 10
+
+        try {
+            Write-Host "Posting access profile: $($body.name)"
+
+            # Use Invoke-WebRequest to capture status code and response
+            $response = Invoke-WebRequest -Method Post -Uri $apiUrl -Headers $headers -Body $jsonBody -ContentType 'application/json' -ErrorAction Stop
+
+            $responseBody = $response.Content | ConvertFrom-Json
+
+            # Extract required fields from response
+            $outputObj = [PSCustomObject]@{
+                id = $responseBody.id
+                name = $responseBody.name
+                description = $responseBody.description
+                created = $responseBody.created
+                modified = $responseBody.modified
+                enabled = $responseBody.enabled
+                'source.name' = if ($responseBody.source) { $responseBody.source.name } else { $null }
+                statusCode = $response.StatusCode
+            }
+
+            $outputObjects += $outputObj
+
+            Write-Host "Success: Created profile '$($body.name)' with ID $($responseBody.id) and status code $($response.StatusCode)"
+        }
+        catch {
+            Write-Warning "Failed to create profile '$($body.name)': $_"
+        }
+    }
+
+    # Export collected data to CSV
+    if ($outputObjects.Count -gt 0) {
+        Write-Host "Writing output to $outputCsvPath"
+        $outputObjects | Export-Csv -Path $outputCsvPath -NoTypeInformation -Encoding UTF8
+    }
+    else {
+        Write-Warning "No profiles were created successfully. No output CSV generated."
+    }
+}
+catch {
+    Write-Error "Error occurred: $_"
+}
