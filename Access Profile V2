@@ -1,6 +1,6 @@
 ```powershell
 # Define file paths
-$mainCsvPath = 'main_data.csv'       # CSV containing main data with accessprofiles (id empty)
+$mainCsvPath = 'main_data.csv'       # CSV containing main data with accessprofiles (id empty or malformed)
 $idMappingCsvPath = 'id_mapping.csv' # CSV containing accessprofiles name and corresponding id
 
 # Import CSV files
@@ -13,16 +13,29 @@ foreach ($entry in $idMapping) {
     $idLookup[$entry.name] = $entry.id
 }
 
+# Helper function to safely parse JSON or return empty array
+function Safe-ConvertFromJson {
+    param([string]$jsonString)
+    if ([string]::IsNullOrWhiteSpace($jsonString)) {
+        return @()
+    }
+    try {
+        return $jsonString | ConvertFrom-Json
+    } catch {
+        Write-Warning "Failed to parse JSON: $_"
+        return @()
+    }
+}
+
 # Process each record in main data
 foreach ($record in $mainData) {
     if ($record.accessprofiles) {
-        # Convert accessprofiles JSON string to object
-        $profiles = $null
-        try {
-            $profiles = $record.accessprofiles | ConvertFrom-Json
-        } catch {
-            Write-Warning "Failed to parse accessprofiles JSON for record: $($record)"
-            continue
+        # Safely parse accessprofiles JSON string
+        $profiles = Safe-ConvertFromJson -jsonString $record.accessprofiles
+
+        # If $profiles is a single object, convert to array for uniform processing
+        if ($profiles -and -not ($profiles -is [System.Array])) {
+            $profiles = @($profiles)
         }
 
         # For each profile, if id is empty, fill it from lookup
@@ -34,18 +47,8 @@ foreach ($record in $mainData) {
 
         # Convert back to JSON string
         $record.accessprofiles = $profiles | ConvertTo-Json -Depth 5
+    } else {
+        # If accessprofiles is empty or missing, set to empty array JSON
+        $record.accessprofiles = '[]'
     }
 }
-
-# Convert entire main data to JSON payload
-$jsonPayload = $mainData | ConvertTo-Json -Depth 10
-
-# Output JSON payload to file
-$jsonPayload | Out-File -FilePath 'output_payload.json' -Encoding utf8
-
-# Also print JSON payload to console
-Write-Host "# Output JSON payload"
-Write-Host $jsonPayload
-
-Write-Host "JSON payload created and saved to output_payload.json"
-```
