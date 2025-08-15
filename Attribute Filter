@@ -1,0 +1,156 @@
+#Install-Module ImportExcel -Scope CurrentUser
+#Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force
+
+[CmdletBinding()]
+param(
+  [Parameter(Mandatory = $true)]
+  [string] $InputPath = "C:\Users\sagar\Documents\User Filter Script\Users.xlsx",
+
+  [Parameter(Mandatory = $true)]
+  [string] $OutputPath = "C:\Users\sagar\Documents\User Filter Script\Output.xlsx",
+
+  [Parameter(Mandatory = $false)]
+  [string] $SourceSheet,
+
+  [Parameter(Mandatory = $false)]
+  [int] $UacValue = 512,
+
+  [Parameter(Mandatory = $false)]
+  [hashtable] $Filters = @{ samAccountName = ".ctr"; userPrincipalName = ".ctr"; displayName = "CONTRACTOR" },
+
+  [Parameter(Mandatory = $false)]
+  [bool] $TreatNullAsDoesNotContain = $true,
+
+  [switch] $WriteUacSourceSheet
+)
+
+# Ensure ImportExcel is available
+if (-not (Get-Module -ListAvailable -Name ImportExcel)) {
+  Write-Host "The 'ImportExcel' module is required. Install with: Install-Module ImportExcel -Scope CurrentUser" -ForegroundColor Yellow
+  throw "Missing module: ImportExcel"
+}
+Import-Module ImportExcel -ErrorAction Stop
+
+# Validate input file
+if (-not (Test-Path -Path $InputPath)) {
+  throw "Input file not found: $InputPath"
+}
+
+# Read data
+$importParams = @{ Path = $InputPath }
+if ($SourceSheet) { $importParams.WorksheetName = $SourceSheet }
+
+$data = Import-Excel @importParams
+if (-not $data -or $data.Count -eq 0) {
+  throw "No data imported from $InputPath. Check the sheet name and content."
+}
+
+# Build a case-insensitive property lookup map for the first row
+$allProps = @{}
+if ($data.Count -gt 0) {
+  foreach ($p in $data[0].PSObject.Properties.Name) {
+    $allProps[$p.ToLower()] = $p
+  }
+}
+
+# Helper: fetch property value by case-insensitive name
+function Get-PropValue {
+  param(
+    [Parameter(Mandatory)][psobject] $Row,
+    [Parameter(Mandatory)][string] $PropName
+  )
+  $key = $PropName.ToLower()
+  if ($allProps.ContainsKey($key)) {
+    $real = $allProps[$key]
+    return $Row.$real
+  }
+  return $null
+}
+
+# Primary filter: userAccountControl == $UacValue (tolerate text or int)
+$uacFiltered = $data | Where-Object {
+  $val = Get-PropValue -Row $_ -PropName 'userAccountControl'
+  if ($null -eq $val) { return $false }
+  if ($val -is [int]) { return $val -eq $UacValue }
+  # Try parse if string
+  $ival = 0
+  if ([int]::TryParse("$val", [ref]$ival)) { return $ival -eq $UacValue }
+  # String compare fallback
+  return [string]::Equals("$val", "$UacValue", [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+if (-not $uacFiltered -or $uacFiltered.Count -eq 0) {
+  Write-Host "No rows matched userAccountControl == $UacValue. Creating an empty Summary only." -ForegroundColor Yellow
+}
+
+# Helper: case-insensitive "does not contain" with optional null-as-not-contain
+function Test-DoesNotContain {
+  param(
+    [AllowNull()][string] $Value,
+    [Parameter(Mandatory)][string] $Substr,
+    [Parameter(Mandatory)][bool] $NullIsNoContain
+  )
+  if ([string]::IsNullOrWhiteSpace($Value)) { return $NullIsNoContain }
+  return ($Value.IndexOf($Substr, [System.StringComparison]::OrdinalIgnoreCase) -lt 0)
+}
+
+# Prepare output: remove existing file if present to avoid stale sheets
+if (Test-Path -Path $OutputPath) {
+  Remove-Item -Path $OutputPath -Force
+}
+
+# Optionally write the UAC-filtered source set
+if ($WriteUacSourceSheet -and $uacFiltered.Count -gt 0) {
+  $uacFiltered | Export-Excel -Path $OutputPath -WorksheetName "Source_UAC$UacValue" -AutoSize -AutoFilter
+}
+
+# Iterate filters dynamically
+$summary = New-Object System.Collections.Generic.List[object]
+$anySheetsWritten = $false
+
+foreach ($key in $Filters.Keys) {
+  $substr = "$($Filters[$key])"
+  $propLower = "$key".ToLower()
+
+  if (-not $allProps.ContainsKey($propLower)) {
+    Write-Host "Skipping '$key' - column not found in the data." -ForegroundColor Yellow
+    $summary.Add([PSCustomObject]@{
+      Attribute   = "$key"
+      Description = "Column '$key' not present; skipped"
+      Count       = 0
+    })
+    continue
+  }
+
+  $filteredSet = $uacFiltered | Where-Object {
+    $val = Get-PropValue -Row $_ -PropName $key
+    Test-DoesNotContain -Value $val -Substr $substr -NullIsNoContain:$TreatNullAsDoesNotContain
+  }
+
+  $safeSuffix = ($substr -replace '[^A-Za-z0-9]+','')
+  $sheetName = if ($safeSuffix) { "$key`_No$safeSuffix" } else { "$key`_NoValue" }
+
+  # For the first sheet in a new file, do not use -Append to create it; subsequent ones use -Append
+  $append = Test-Path $OutputPath
+  $filteredSet | Export-Excel -Path $OutputPath -WorksheetName $sheetName -AutoSize -AutoFilter -Append:$append
+  $anySheetsWritten = $true
+
+  $summary.Add([PSCustomObject]@{
+    Attribute   = "$key"
+    Description = "Does NOT contain '$substr' (case-insensitive); null/empty included=$TreatNullAsDoesNotContain"
+    Count       = ($filteredSet.Count)
+  })
+}
+
+# Always include count of the primary filter itself
+$summary.Insert(0, [PSCustomObject]@{
+  Attribute   = "Primary_UAC_$UacValue"
+  Description = "Rows with userAccountControl == $UacValue"
+  Count       = ($uacFiltered.Count)
+})
+
+# Write Summary (create file if nothing else has been written yet)
+$appendForSummary = Test-Path $OutputPath
+$summary | Export-Excel -Path $OutputPath -WorksheetName "Summary" -AutoSize -TableName "Summary" -BoldTopRow -FreezeTopRow -Append:$appendForSummary
+
+Write-Host ("Done. Output written to: {0}`nSheets created: {1}" -f $OutputPath, (($summary | Where-Object { $_.Attribute -ne "Primary_UAC_$UacValue" -and $_.Count -ne 0 }).Attribute -join ', ')) -ForegroundColor Green
