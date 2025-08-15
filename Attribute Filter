@@ -4,10 +4,10 @@
 [CmdletBinding()]
 param(
   [Parameter(Mandatory = $true)]
-  [string] $InputPath = "C:\Users\sagar\Documents\User Filter Script\Users.xlsx",
+  [string] $InputPath = "",
 
   [Parameter(Mandatory = $true)]
-  [string] $OutputPath = "C:\Users\sagar\Documents\User Filter Script\Output.xlsx",
+  [string] $OutputPath = "",
 
   [Parameter(Mandatory = $false)]
   [string] $SourceSheet,
