@@ -1,0 +1,236 @@
+function Invoke-AccountsExport {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)] [string] $Tenant,
+        [Parameter(Mandatory = $true)] [string] $Domain,
+        [Parameter(Mandatory = $true)] [string] $ClientId,
+        [Parameter(Mandatory = $true)] [string] $ClientSecret,
+        [Parameter(Mandatory = $true)] [string] $OutCsv,
+        [string] $Filter = 'sourceId eq "2c9180858082150f0180893dbaf44201"',
+        [int] $Limit = 250,
+        [int] $Offset = 0,
+        [switch] $ShowProgress,
+
+        # SharePoint upload options
+        [switch] $UploadToSharePoint,
+        [string] $SpTenantName,         # e.g., contoso (for contoso.sharepoint.com)
+        [string] $SpSitePath,           # e.g., "sites/Finance" or "teams/IT"
+        [string] $SpDriveName = "Documents",  # Usually default doc library is "Documents"
+        [string] $SpDriveId,            # Optional: use driveId instead of drive name
+        [string] $SpFolderPath = "/",   # e.g., "/Exports"
+        [string] $SpFileName            # Optional override; defaults to leaf name of OutCsv
+    )
+
+    $tokenUrl  = "https://$Tenant.api.$Domain.com/oauth/token"
+    $baseUrl   = "https://$Tenant.api.$Domain.com/v3//accounts"
+    $countFlag = "true"
+
+    $form = @{
+        grant_type    = "client_credentials"
+        client_id     = $ClientId
+        client_secret = $ClientSecret
+    }
+
+    try {
+        $tokenResp = Invoke-RestMethod -Method Post -Uri $tokenUrl -Body $form -ContentType "application/x-www-form-urlencoded"
+    } catch {
+        throw "Token request failed: $($_.Exception.Message)"
+    }
+
+    $accessToken = $tokenResp.access_token
+    if (-not $accessToken) { throw "No access_token in response: $(ConvertTo-Json $tokenResp -Depth 5)" }
+
+    $headers = @{ Authorization = "Bearer $accessToken" }
+
+    $allItems   = @()
+    $totalCount = $null
+    $pageIndex  = 0
+
+    if ($ShowProgress) { Write-Host "Fetching accounts..." }
+
+    while ($true) {
+        $uri = "$baseUrl?limit=$Limit&offset=$Offset&count=$countFlag&filters=$([uri]::EscapeDataString($Filter))"
+
+        try {
+            $resp = Invoke-WebRequest -Method Get -Uri $uri -Headers $headers
+        } catch {
+            throw "API request failed at offset $Offset: $($_.Exception.Message)"
+        }
+
+        try {
+            $json = $resp.Content | ConvertFrom-Json
+        } catch {
+            throw "Failed to parse JSON at offset $Offset. Raw content: $($resp.Content)"
+        }
+
+        if (-not $totalCount -and $resp.Headers["X-Total-Count"]) {
+            [int]$totalCount = $resp.Headers["X-Total-Count"]
+            if ($ShowProgress) { Write-Host "X-Total-Count: $totalCount" }
+        }
+
+        $items = @()
+        if ($null -ne $json) {
+            if ($json -is [System.Collections.IEnumerable] -and -not ($json -is [string])) {
+                # if it's an array-like, coerce to array
+                $items = @($json)
+                # handle wrapped { items: [...] }
+                if ($json.items) { $items = @($json.items) }
+            } else {
+                $items = @($json)
+            }
+        }
+
+        $countThisPage = $items.Count
+        if ($ShowProgress) { Write-Host ("Page {0}: {1} item(s)" -f $pageIndex, $countThisPage) }
+        if ($countThisPage -eq 0) { break }
+
+        $allItems += $items
+
+        if ($totalCount -and $allItems.Count -ge $totalCount) { break }
+
+        $Offset   += $Limit
+        $pageIndex++
+    }
+
+    Write-Host "Total collected items: $($allItems.Count)"
+    if ($allItems.Count -eq 0) { Write-Host "No items to write. Exiting."; return }
+
+    # Shorter deep flattener
+    function Flatten {
+        param([object]$Value, [string]$Prefix = "")
+        $map = @{}
+
+        if ($null -eq $Value) {
+            if ($Prefix) { $map[$Prefix] = $null }
+            return $map
+        }
+
+        # Primitive-ish: keep as-is
+        if ($Value -is [string] -or $Value -is [ValueType]) {
+            if ($Prefix) { $map[$Prefix] = $Value } else { $map["value"] = $Value }
+            return $map
+        }
+
+        # Array or IEnumerable (not string)
+        if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
+            $i = 0
+            foreach ($e in $Value) {
+                $childPrefix = if ($Prefix) { "$Prefix[$i]" } else { "[$i]" }
+                (Flatten -Value $e -Prefix $childPrefix).GetEnumerator() | ForEach-Object { $map[$_.Key] = $_.Value }
+                $i++
+            }
+            if ($i -eq 0 -and $Prefix) { $map[$Prefix] = "" }
+            return $map
+        }
+
+        # Object: walk properties
+        foreach ($p in $Value.PSObject.Properties) {
+            $childPrefix = if ($Prefix) { "$Prefix.$($p.Name)" } else { $p.Name }
+            (Flatten -Value $p.Value -Prefix $childPrefix).GetEnumerator() | ForEach-Object { $map[$_.Key] = $_.Value }
+        }
+        return $map
+    }
+
+    $flatMaps = @()
+    $allKeys  = [System.Collections.Generic.HashSet[string]]::new()
+    foreach ($item in $allItems) {
+        $m = Flatten -Value $item
+        $flatMaps += ,$m
+        foreach ($k in $m.Keys) { $null = $allKeys.Add($k) }
+    }
+
+    $sortedKeys = $allKeys.ToArray()
+    [Array]::Sort($sortedKeys, [System.StringComparer]::Ordinal)
+
+    $priority = @('id','name','sourceId','sourceName','identityId','created','modified')
+    $front = @()
+    foreach ($p in $priority) {
+        if ($sortedKeys -contains $p) {
+            $front += $p
+            $sortedKeys = $sortedKeys | Where-Object { $_ -ne $p }
+        }
+    }
+    $finalKeys = @($front + $sortedKeys)
+
+    $rows = foreach ($m in $flatMaps) {
+        $obj = [ordered]@{}
+        foreach ($k in $finalKeys) { $obj[$k] = $(if ($m.ContainsKey($k)) { $m[$k] } else { $null }) }
+        [PSCustomObject]$obj
+    }
+
+    try {
+        $dir = Split-Path -Parent $OutCsv
+        if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir | Out-Null }
+        $rows | Export-Csv -Path $OutCsv -NoTypeInformation -Encoding UTF8
+        Write-Host "CSV written to: $OutCsv"
+    } catch {
+        throw "Failed to write CSV: $($_.Exception.Message)"
+    }
+
+    function Upload-ToSharePoint {
+        param(
+            [Parameter(Mandatory = $true)] [string] $LocalPath,
+            [Parameter(Mandatory = $true)] [string] $TenantName,   # contoso
+            [Parameter(Mandatory = $true)] [string] $ClientId,
+            [Parameter(Mandatory = $true)] [string] $ClientSecret,
+            [Parameter(Mandatory = $true)] [string] $SitePath,     # sites/Finance
+            [string] $DriveName = "Documents",
+            [string] $DriveId,
+            [string] $FolderPath = "/",
+            [string] $DestFileName
+        )
+
+        $graphTokenUrl = "https://login.microsoftonline.com/$TenantName.onmicrosoft.com/oauth2/v2.0/token"
+        $scope = "https://graph.microsoft.com/.default"
+        $body = @{
+            client_id     = $ClientId
+            client_secret = $ClientSecret
+            grant_type    = "client_credentials"
+            scope         = $scope
+        }
+        try {
+            $t = Invoke-RestMethod -Method Post -Uri $graphTokenUrl -Body $body -ContentType "application/x-www-form-urlencoded"
+        } catch {
+            throw "Graph token request failed: $($_.Exception.Message)"
+        }
+        $graphToken = $t.access_token
+        if (-not $graphToken) { throw "No Graph access token received." }
+        $gHeaders = @{ Authorization = "Bearer $graphToken" }
+
+        $siteUrl = "https://graph.microsoft.com/v1.0/sites/$TenantName.sharepoint.com:/$SitePath"
+        try {
+            $site = Invoke-RestMethod -Method Get -Uri $siteUrl -Headers $gHeaders
+        } catch {
+            throw "Failed to get site: $($_.Exception.Message)"
+        }
+        $siteId = $site.id
+        if (-not $DriveId) {
+            $drives = Invoke-RestMethod -Method Get -Uri "https://graph.microsoft.com/v1.0/sites/$siteId/drives" -Headers $gHeaders
+            $drive = $drives.value | Where-Object { $_.name -eq $DriveName } | Select-Object -First 1
+            if (-not $drive) { throw "Drive '$DriveName' not found on site $SitePath." }
+            $DriveId = $drive.id
+        }
+
+        if (-not $DestFileName) { $DestFileName = Split-Path -Leaf $LocalPath }
+        $folderPathClean = ($FolderPath -replace '\\','/').Trim()
+        if (-not $folderPathClean.StartsWith("/")) { $folderPathClean = "/$folderPathClean" }
+        if ($folderPathClean -ne "/") { $folderPathClean = $folderPathClean.TrimEnd("/") }
+
+        $contentBytes = [System.IO.File]::ReadAllBytes($LocalPath)
+        $enc = [System.Text.Encoding]::GetEncoding("ISO-8859-1")
+        $uploadUrl = "https://graph.microsoft.com/v1.0/drives/$DriveId/root:$folderPathClean/$DestFileName:/content"
+        try {
+            $null = Invoke-RestMethod -Method Put -Uri $uploadUrl -Headers $gHeaders -Body $contentBytes -ContentType "text/csv; charset=utf-8"
+            Write-Host "Uploaded to SharePoint: $SitePath$folderPathClean/$DestFileName"
+        } catch {
+            throw "Upload failed: $($_.Exception.Message)"
+        }
+    }
+
+    if ($UploadToSharePoint) {
+        if (-not $SpTenantName -or -not $SpSitePath) {
+            throw "For -UploadToSharePoint, provide -SpTenantName and -SpSitePath (and optionally -SpDriveName/-SpDriveId, -SpFolderPath, -SpFileName)."
+        }
+        Upload-ToSharePoint -LocalPath $OutCsv -TenantName $SpTenantName -ClientId $ClientId -ClientSecret $ClientSecret -SitePath $SpSitePath -DriveName $SpDriveName -DriveId $SpDriveId -FolderPath $SpFolderPath -DestFileName ($SpFileName ? $SpFileName : (Split-Path -Leaf $OutCsv))
+    }
+}
