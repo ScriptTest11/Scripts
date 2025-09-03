@@ -1,0 +1,86 @@
+function Start-EmployeeValidation {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory=$true)]
+        [string]$CsvFilePath, 
+
+        [Parameter(Mandatory=$true)]
+        [string]$HCMbackupFolder,
+        
+        [Parameter(Mandatory=$true)]
+        [string]$SmtpServer,
+        
+        [Parameter(Mandatory=$true)]
+        [string]$FromAddress,
+        
+        [Parameter(Mandatory=$true)]
+        [string[]]$ToAddress = @(),
+        
+        [Parameter(Mandatory=$false)]
+        [string[]]$CcAddress = @(),
+        
+        [Parameter(Mandatory=$true)]
+        [string]$Subject,
+
+        [Parameter(Mandatory=$true)]
+        [string[]]$MandatoryFields = @(),
+
+        [Parameter(Mandatory=$true)]
+        [string]$HeaderCount,
+
+        [Parameter(Mandatory=$true)]
+        [string[]]$HeaderFields = @(),
+
+        [Parameter(Mandatory=$true)]
+        [Boolean]$ValidationProcessFlag
+    )
+
+    Write-Host "Starting employee validation for: $CsvFilePath"
+    Test-Path -Path $CsvFilePath
+
+    try {
+        $employees = Import-Csv -Path $CsvFilePath -ErrorAction Stop
+    }
+    catch {
+        Write-Error "Failed to import CSV file: $_"
+        return 1
+    }
+
+    $headerLine = Get-Content -Path $csvFilePath -TotalCount 1
+    $headerColumns = $headerLine -split ','
+    if ($headerColumns.Count -ne $HeaderCount) {
+        $bodyMessage = 'Header Count mismatch please Validate the Header'
+
+
+        Send-MailMessage -From $FromAddress -To $ToAddress -Cc $CcAddress -Subject $subject -Body $bodyMessage -SmtpServer $smtpServer
+        Write-Host "Header validation failed. Email sent. $($headerColumns.Count)"
+        return 1
+    } else {
+        Write-Host "Header validation passed."
+        foreach ($headerColumns in $HeaderFields) {
+                if ($headers -contains $header) {
+                   
+                } else {
+                    $bodyMessage = 'Header Field mismatch please Validate the Header'
+                    Send-MailMessage -From $FromAddress -To $ToAddress -Cc $CcAddress -Subject $subject -Body $bodyMessage -SmtpServer $smtpServer
+                    return 1
+                    }
+                }
+    }
+
+    Write-Host "Entering LCS Calculation"
+
+    #-----------------------------------------------------
+    Import-Module -Name "C:\Users\sagar.sapkota\OneDrive - Rheem Manufacturing Company\Documents\Testing\HCM File Validation\lcsValidator.psm1" -Force
+ 
+    Start-LcsValidator -Subject $Subject `
+                   -HCMbackupFolder $HCMbackupFolder `
+                   -ValidationProcessFlag $ValidationProcessFlag `
+                   -FromAddress $FromAddress `
+                   -To $ToAddress `
+                   -Cc $CcAddress `
+                   -SmtpServer $SmtpServer `
+                   -CsvFilePath $CsvFilePath
+    #----------------------------------------------------- 
+    }
+    Export-ModuleMember -Function Start-EmployeeValidation
