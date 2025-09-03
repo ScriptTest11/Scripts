@@ -1,0 +1,243 @@
+function Start-LcsValidator {
+ 
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory=$true)]
+        [string]$Subject,
+
+        [Parameter(Mandatory=$true)]
+        [string]$HCMbackupFolder,
+
+        [Parameter(Mandatory=$true)]
+        [Boolean]$ValidationProcessFlag,
+
+        [Parameter(Mandatory=$true)]
+        [string]$FromAddress,
+
+        [Parameter(Mandatory=$true)]
+        [string[]]$ToArray,
+
+        [Parameter(Mandatory=$false)]
+        [string[]]$CCArray,
+
+        [Parameter(Mandatory=$true)]
+        [string]$smtpServer,
+
+        [Parameter(Mandatory=$true)]
+        [string]$CsvFilePath
+    )
+
+    $employees = Import-Csv -Path $CsvFilePath -ErrorAction Stop
+    $inputFormat = if ($Subject.Contains("HCM")) { "MM-dd-yyyy" } else { "dd-MM-yyyy" }
+    $outputFormat = "yyyy-MM-dd'T'HH:mm:ss.fff'Z'"
+
+    $nowRaw = [DateTime]::UtcNow
+    $nowRounded = $nowRaw.AddMilliseconds(500 - ($nowRaw.Millisecond % 1000))
+    $now = $nowRounded.ToString($outputFormat)
+    $nowRoundedToDay = [DateTime]::UtcNow.Date
+
+    Write-Host "Current UTC Time (Rounded): $now"
+
+    $statusCounts = @{}
+    $invalidHireDateList = @()
+    $missingHireDateList = @()
+    $invalidTerminationDateList = @()
+
+    foreach ($employee in $employees) {
+        
+    $validationMessages = @()
+    $statusCounts = @{}
+    $invalidHireDateList = @()
+    $missingHireDateList = @()
+    $invalidTerminationDateList = @()
+
+foreach ($employee in $employees) {
+    $employeeNumber = $employee.EMPLOYEENUMBER
+    $employeeStartDate = if (![string]::IsNullOrWhiteSpace($employee.HIRE_DATE)) { $employee.HIRE_DATE } else { "NoValue" }
+
+    $hireDateInput = $null
+    $termDateInput = $null
+    $convertedTermDate = ""
+    $convertedHireDateDT = $null
+    $nowRoundedToDay = (Get-Date).Date
+    $termDateCalcNow = $nowRoundedToDay.AddDays(-15)
+
+    # Hire Date Parsing
+    if (![string]::IsNullOrWhiteSpace($employee.HIRE_DATE)) {
+        try {
+            $hireDateInput = [DateTime]::ParseExact($employee.HIRE_DATE, $inputFormat, $null)
+            $convertedHireDateDT = $hireDateInput
+        } catch {
+            $invalidHireDateList += $employee
+        }
+    } else {
+        $missingHireDateList += $employee
+    }
+
+    # Status Logic
+    $convertedHireDatepreHire = if ($convertedHireDateDT) { $convertedHireDateDT.AddDays(-14).Date } else { $null }
+    $convertedEmpHireDate = if ($convertedHireDateDT) { $convertedHireDateDT.AddDays(+2) } else { $null }
+    $convertedEmpHireDateOneDay = if ($convertedHireDateDT) { $convertedHireDateDT.AddDays(-1) } else { $null }
+
+    $empHireDateNegativeConditionLogic = if ($convertedEmpHireDateOneDay -lt $nowRoundedToDay) { "NEWHIRE" } else { "FUTUREHIRE" }
+    $beforeHireDate = if ($convertedHireDateDT -and $nowRoundedToDay -gt $convertedHireDateDT) { "yes" } else { "no" }
+    $fourteenDaysBeforeStartDate = if ($convertedHireDatepreHire -and $nowRoundedToDay -gt $convertedHireDatepreHire) { "yes" } else { "no" }
+    $empHireDate = if ($convertedEmpHireDate -and $convertedEmpHireDate -lt $nowRoundedToDay) { "EXISTING" } else { $empHireDateNegativeConditionLogic }
+    $fourteenDaysOrMoreBeforeStartDate = if ($convertedHireDatepreHire -and $nowRoundedToDay -lt $convertedHireDatepreHire) { "yes" } else { "no" }
+
+    $status = "unknown"
+    if ($employeeStartDate -eq 'NoValue' -and $employeeStatus.StartsWith('Active')) {
+        $status = 'prehire'
+    } elseif ($fourteenDaysOrMoreBeforeStartDate -eq 'yes' -and $beforeHireDate -eq 'no') {
+        $status = 'prehire'
+    } elseif ($fourteenDaysBeforeStartDate -eq 'yes' -and $beforeHireDate -eq 'no') {
+        $status = 'hire'
+    } elseif ($empHireDate -eq 'NEWHIRE') {
+        $status = 'hire'
+    } elseif ($employeeStatus.StartsWith('Active')) {
+        $status = 'active'
+    } elseif ($employeeStatus -in @('Leave of Absence', 'Suspended - Payroll Eligible', 'Suspended - No Payroll')) {
+        $status = 'active'
+    } elseif ($employeeStatus -in @('Inactive', 'Layoff')) {
+        $status = 'active'
+    } elseif ($employeeStatus -in @('Inactive', 'Layoff') -and $employeeStartDate -eq 'NoValue') {
+        $status = 'terminated'
+    }
+
+    # Conditional Termination Date Validation
+    $termDate = "no"
+    if ($status -eq 'terminated' -and ![string]::IsNullOrWhiteSpace($employee.TERMINATION_DATE)) {
+        try {
+            $termDateInput = [DateTime]::ParseExact($employee.TERMINATION_DATE, $inputFormat, $null)
+            $convertedTermDate = $termDateInput.ToString($outputFormat)
+            $termDate = if ($termDateCalcNow -gt $termDateInput) { "yes" } else { "no" }
+        } catch {
+            $invalidTerminationDateList += $employee
+        }
+    }
+
+    # Count status
+    if ($statusCounts.ContainsKey($status)) {
+        $statusCounts[$status] += 1
+    } else {
+        $statusCounts[$status] = 1
+    }
+
+
+    $missingFields = @()
+    
+    foreach ($field in $MandatoryFields) {
+        $value = $employee.$field
+    
+        if ($null -eq $value) {
+            $missingFields += $field
+        } elseif ($value -is [string] -and [string]::IsNullOrWhiteSpace($value)) {
+            $missingFields += $field
+        }
+    }
+
+    if ($missingFields.Count -gt 0) {
+        if ($Subject.Contains("Tress")) {
+            $employeeName = "$($employee.PREFERRED_FIRST_NAME) $($employee.PREFERRED_LAST_NAME)"
+        } elseif ($Subject.Contains("HCM")) {
+            $employeeName = "$($employee.FIRST_NAME) $($employee.LAST_NAME)"
+        } elseif ($Subject.Contains("Prodensa")) {
+            $employeeName = "$($employee.Preferred_First_Name) $($employee.Preferred_Last_Name)"
+        }
+
+        $validationMessages += [PSCustomObject]@{
+            EmployeeName  = $employeeName
+            MissingFields = ($missingFields -join ', ')
+        }
+    }
+}
+
+    # Email Report if Validation Issues Exist
+    if ($validationMessages.Count -gt 0) {
+        $csvPath = "\HR_Validation_Report.csv"
+        $validationMessages | Export-Csv -Path $csvPath -NoTypeInformation
+    
+        $emailParams = @{
+            From        = $FromAddress
+            To          = $CCArray
+            Subject     = $Subject
+            Body        = "Please find attached the HR validation report in CSV format.`nGenerated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+            SmtpServer  = $SmtpServer
+            Attachments = $csvPath
+        }
+    
+        if ($CcAddress.Count -gt 0) {
+            $emailParams.Add("Cc", $CcAddress)
+        }
+    
+        try {
+            Send-MailMessage @emailParams -ErrorAction Stop
+            Write-Host "Email sent successfully with $($validationMessages.Count) validation issues."
+            Remove-Item $csvPath -ErrorAction SilentlyContinue
+            return 0
+        } catch {
+            Write-Error "Failed to send email: $_"
+            return 1
+        }
+    } else {
+        Write-Host "No validation issues found. All mandatory fields are populated."
+        return 0
+    }
+        }
+    
+    # Export status summary
+    $statusSummary = $statusCounts.GetEnumerator() | ForEach-Object {
+        [PSCustomObject]@{
+            Status = $_.Key
+            Count  = $_.Value
+        }
+    }
+
+    # Export error files
+    
+    $processingDir = Join-Path $HCMbackupFolder "processing"
+    if (-not (Test-Path $processingDir)) {
+        New-Item -Path $processingDir -ItemType Directory -Force
+    }
+
+    # Invalid Hire Dates
+    if ($invalidHireDateList.Count -gt 0) {
+        $invalidHireDatepath = Join-Path $processingDir "invalid_hire_dates.csv"
+        $invalidHireDateList | Export-Csv -Path $invalidHireDatepath -NoTypeInformation
+    
+        $bodyMessage = "Please find attached the list of employees with invalid hire dates."
+        Send-MailMessage -From $FromAddress `
+                         -To $ToArray `
+                         -Cc $CCArray `
+                         -Subject "$Subject - Invalid Hire Dates" `
+                         -Body $bodyMessage `
+                         -SmtpServer $smtpServer `
+                         -Attachments $invalidHireDatepath
+    }
+    
+    # Invalid Termination Dates
+    if ($invalidTerminationDateList.Count -gt 0) {
+        $invalidTermDatePath = Join-Path $processingDir "InvalidTermDate.csv"
+        $invalidTerminationDateList | Export-Csv -Path $invalidTermDatePath -NoTypeInformation
+    
+        $bodyMessage = "Please find attached the list of employees with invalid termination dates."
+        Send-MailMessage -From $FromAddress `
+                         -To $ToArray `
+                         -Cc $CCArray `
+                         -Subject "$Subject - Invalid Termination Dates" `
+                         -Body $bodyMessage `
+                         -SmtpServer $smtpServer `
+                         -Attachments $invalidTermDatePath
+    }
+    
+    
+        Write-Host "Status counts and error files exported and emailed."   
+        if ($ValidationProcessFlag -and (
+            $invalidHireDateList.Count -gt 1 -or
+            $missingHireDateList.Count -gt 1 -or
+            $invalidTerminationDateList.Count -gt 1
+        )) {
+            return 1
+        }
+    }
+    Export-ModuleMember -Function Start-LcsValidator
