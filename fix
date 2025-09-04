@@ -1,0 +1,17 @@
+# Get last business day for comparison (skip weekends)
+$today = Get-Date
+$lastBusinessDay = $today.AddDays(-1)
+
+# If today is Monday, go back to Friday
+if ($today.DayOfWeek -eq 'Monday') {
+    $lastBusinessDay = $today.AddDays(-3)  # Go back to Friday
+}
+# If today is Tuesday and yesterday was Monday, check if we need to go to Friday
+elseif ($today.DayOfWeek -eq 'Tuesday' -and $lastBusinessDay.DayOfWeek -eq 'Monday') {
+    $lastBusinessDay = $today.AddDays(-4)  # Go back to Friday
+}
+
+$lastBusinessDayStr = $lastBusinessDay.ToString("yyyy-MM-dd")
+$yesterdayReportPath = Join-Path $reportDir "status_count_$($SourceConfig.SourceName)_$lastBusinessDayStr.json"
+
+Write-Host "Comparing with last business day: $lastBusinessDayStr (was $($lastBusinessDay.DayOfWeek))"
