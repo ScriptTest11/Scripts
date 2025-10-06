@@ -69,20 +69,37 @@ function Start-Validation {
         }
     }
 
-    function Upload-Replace([string]$LocalFilePath, [string]$RemoteDir, [string]$RemoteFileName) {
-        Ensure-RemoteDir $RemoteDir
-        $remoteDir  = Normalize-RemotePath $RemoteDir
-        $remoteFile = Normalize-RemotePath (Join-Path $remoteDir $RemoteFileName)
+function Upload-Replace([string]$LocalFilePath, [string]$RemoteDir, [string]$RemoteFileName) {
+    Ensure-RemoteDir $RemoteDir
+    $remoteDir  = ($RemoteDir -replace '\\','/').TrimEnd('/')
+    $remoteFile = "$remoteDir/$RemoteFileName"
 
-        $existing = Get-SFTPChildItem -SessionId $SFTPSession.SessionId -Path $remoteFile -ErrorAction SilentlyContinue
-        if ($existing) {
-            Write-Host "Remote file exists. Removing before upload: $remoteFile"
-            Remove-SFTPItem -SessionId $SFTPSession.SessionId -Path $remoteFile -Force -ErrorAction Stop
-        }
-
-        Set-SFTPItem -SessionId $SFTPSession.SessionId -Path $LocalFilePath -Destination $remoteDir -ErrorAction Stop
-        Write-Host "Uploaded file to SFTP: $remoteDir/$RemoteFileName"
+    # Prefer Set-SFTPFile if available (supports -Overwrite)
+    $setSftpFileCmd = Get-Command Set-SFTPFile -ErrorAction SilentlyContinue
+    if ($setSftpFileCmd) {
+        Set-SFTPFile -SessionId $SFTPSession.SessionId `
+                     -LocalFile $LocalFilePath `
+                     -RemotePath $remoteFile `
+                     -Overwrite `
+                     -ErrorAction Stop
+        Write-Host "Uploaded (overwrite) to: $remoteFile"
+        return
     }
+
+    # Fallback for older Posh-SSH: delete then upload to the FULL remote path
+    $existing = Get-SFTPChildItem -SessionId $SFTPSession.SessionId -Path $remoteFile -ErrorAction SilentlyContinue
+    if ($existing) {
+        Write-Host "Remote file exists. Removing before upload: $remoteFile"
+        Remove-SFTPItem -SessionId $SFTPSession.SessionId -Path $remoteFile -Force -ErrorAction Stop
+    }
+
+    # IMPORTANT: upload to the full remote file path (not just the directory)
+    Set-SFTPItem -SessionId $SFTPSession.SessionId `
+                 -Path $LocalFilePath `
+                 -Destination $remoteFile `
+                 -ErrorAction Stop
+    Write-Host "Uploaded to: $remoteFile"
+}
 
     function Download-IfExists([string]$RemoteFilePath, [string]$LocalDestinationPath) {
         $remoteFile = Normalize-RemotePath $RemoteFilePath
