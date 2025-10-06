@@ -1,5 +1,6 @@
 # Import required modules
-    Import-Module -Name "C:\Users\sagar.sapkota\OneDrive - Rheem Manufacturing Company\Documents\Testing\HCM\Script\LCSCalculation.psm1" -Force
+Import-Module -Name "C:\Users\sagar.sapkota\OneDrive - Rheem Manufacturing Company\Documents\Testing\HCM\Script\LCSCalculation.psm1" -Force
+# Requires Posh-SSH for SFTP cmdlets (New-SFTPSession, Get/Set/Remove-SFTPItem, Get-SFTPChildItem, New-SFTPItem)
 
 function Start-Validation {
     [CmdletBinding()]
@@ -14,10 +15,10 @@ function Start-Validation {
         [hashtable]$EmailConfig,
         
         [Parameter(Mandatory=$true)]
-        [string]$BackupFolder,
+        [string]$BackupFolder,   # Remote base folder on SFTP (e.g. /path/to/backups)
 
         [Parameter(Mandatory=$true)]
-        [string]$SourceFolder,
+        [string]$SourceFolder,   # Remote source folder on SFTP (e.g. /path/to/source)
 
         [Parameter(Mandatory=$true)]
         [string]$SftpUser,
@@ -29,16 +30,69 @@ function Start-Validation {
         [string]$SftpHost
     )
 
-    $SecurePass = ConvertTo-SecureString $Password -AsPlainText -Force
-    $Credential = New-Object System.Management.Automation.PSCredential ($SftpUser, $SecurePass)  
+    # --- Setup ---
+    $todayStr   = Get-Date -Format "yyyy-MM-dd"
+    $timestamp  = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+
+    $SecurePass  = ConvertTo-SecureString $Password -AsPlainText -Force
+    $Credential  = New-Object System.Management.Automation.PSCredential ($SftpUser, $SecurePass)
     $SFTPSession = New-SFTPSession -ComputerName $SftpHost -Credential $Credential -AcceptKey -Verbose
     Write-Host "SFTP session established to $SftpHost."
 
-    # Create temp directory
-$TempDir = "$env:TEMP\SFTPTemp"
-if (!(Test-Path -Path $TempDir)) {
-    New-Item -Path $TempDir -ItemType Directory -Force | Out-Null
-}
+    # Temp directory for local staging of files prior to upload or for downloads from SFTP
+    $TempDir = Join-Path $env:TEMP "SFTPTemp"
+    if (!(Test-Path -Path $TempDir)) {
+        New-Item -Path $TempDir -ItemType Directory -Force | Out-Null
+    }
+
+    # Remote report folder on SFTP
+    $ReportRemoteDir = (Join-Path $BackupFolder "report")
+
+    # --- Local helper functions (SFTP and path utilities) ---
+    function Normalize-RemotePath([string]$PathText) {
+        return ($PathText -replace '\\','/').Trim()
+    }
+
+    function Ensure-RemoteDir([string]$RemoteDir) {
+        $remote = Normalize-RemotePath $RemoteDir
+        try {
+            # If it doesn't exist, this will error
+            Get-SFTPChildItem -SessionId $SFTPSession.SessionId -Path $remote -ErrorAction Stop | Out-Null
+        } catch {
+            try {
+                New-SFTPItem -SessionId $SFTPSession.SessionId -Path $remote -ItemType Directory -Force -ErrorAction Stop | Out-Null
+                Write-Host "Created remote directory: $remote"
+            } catch {
+                Write-Error "Failed to ensure remote directory '$remote': $_"
+                throw
+            }
+        }
+    }
+
+    function Upload-Replace([string]$LocalFilePath, [string]$RemoteDir, [string]$RemoteFileName) {
+        Ensure-RemoteDir $RemoteDir
+        $remoteDir  = Normalize-RemotePath $RemoteDir
+        $remoteFile = Normalize-RemotePath (Join-Path $remoteDir $RemoteFileName)
+
+        $existing = Get-SFTPChildItem -SessionId $SFTPSession.SessionId -Path $remoteFile -ErrorAction SilentlyContinue
+        if ($existing) {
+            Write-Host "Remote file exists. Removing before upload: $remoteFile"
+            Remove-SFTPItem -SessionId $SFTPSession.SessionId -Path $remoteFile -Force -ErrorAction Stop
+        }
+
+        Set-SFTPItem -SessionId $SFTPSession.SessionId -Path $LocalFilePath -Destination $remoteDir -ErrorAction Stop
+        Write-Host "Uploaded file to SFTP: $remoteDir/$RemoteFileName"
+    }
+
+    function Download-IfExists([string]$RemoteFilePath, [string]$LocalDestinationPath) {
+        $remoteFile = Normalize-RemotePath $RemoteFilePath
+        $existing   = Get-SFTPChildItem -SessionId $SFTPSession.SessionId -Path $remoteFile -ErrorAction SilentlyContinue
+        if ($existing) {
+            Get-SFTPItem -SessionId $SFTPSession.SessionId -Path $remoteFile -Destination $LocalDestinationPath -ErrorAction Stop | Out-Null
+            return $true
+        }
+        return $false
+    }
 
     Write-Host "=========================================="
     Write-Host "Starting validation for source: $($SourceConfig.SourceName)"
@@ -46,37 +100,38 @@ if (!(Test-Path -Path $TempDir)) {
     Write-Host "Process validation mode: $($SourceConfig.processValidation)"
     Write-Host "=========================================="
 
-    # Validate that the CSV file exists
+    # Validate that the CSV file exists (local path provided as input)
     if (-not (Test-Path -Path $BackupFilePath)) {
         Write-Error "CSV file not found: $BackupFilePath"
+        Remove-SFTPSession -SessionId $SFTPSession.SessionId
         return 1
     }
 
     try {
-    if ($SourceConfig.SourceName = "HCM"){
-    $employees = Import-Csv -Path $BackupFilePath -ErrorAction Stop | Where-Object {
-    $_.COUNTRY -eq 'US' -and
-    $_.EMPLOYEENUMBER -notin @(
-        '125248401090',
-        '125248401167',
-        '124242402061',
-        '125248401052',
-        '700000008166',
-        '700000005909',
-        '124909006603',
-        '125242411110',
-        '124353502270',
-        '125242400425',
-        '125242411249'
-    )
-    }
-
-    }
-        
+        if ($SourceConfig.SourceName -eq "HCM") {
+            $employees = Import-Csv -Path $BackupFilePath -ErrorAction Stop | Where-Object {
+                $_.COUNTRY -eq 'US' -and
+                $_.EMPLOYEENUMBER -notin @(
+                    '125248401090',
+                    '125248401167',
+                    '124242402061',
+                    '125248401052',
+                    '700000008166',
+                    '700000005909',
+                    '124909006603',
+                    '125242411110',
+                    '124353502270',
+                    '125242400425',
+                    '125242411249'
+                )
+            }
+        } else {
+            $employees = Import-Csv -Path $BackupFilePath -ErrorAction Stop
+        }
         Write-Host "Successfully imported $($employees.Count) employee records"
-    }
-    catch {
+    } catch {
         Write-Error "Failed to import CSV file: $_"
+        Remove-SFTPSession -SessionId $SFTPSession.SessionId
         return 1
     }
 
@@ -84,28 +139,30 @@ if (!(Test-Path -Path $TempDir)) {
     # STEP 1: HEADER VALIDATION (FAIL-FAST)
     # ===========================================
     Write-Host "Step 1: Header validation..."
-    
-    $headerLine = Get-Content -Path $BackupFilePath -TotalCount 1
+
+    $headerLine    = Get-Content -Path $BackupFilePath -TotalCount 1
     $headerColumns = $headerLine -split ','
-    
+
     # Check header count
     if ($headerColumns.Count -ne $SourceConfig.HeaderCount) {
         $bodyMessage = "Header Count mismatch for $($SourceConfig.SourceName).`nExpected: $($SourceConfig.HeaderCount)`nFound: $($headerColumns.Count)`n`nPlease verify the file format and try again."
         Send-ValidationEmail -EmailConfig $EmailConfig -Subject "$($EmailConfig.Subject) - Header Count Mismatch" -Body $bodyMessage
         Write-Host "Header count validation FAILED. Expected: $($SourceConfig.HeaderCount), Found: $($headerColumns.Count)"
+        Remove-SFTPSession -SessionId $SFTPSession.SessionId
         return 1
     }
-    
+
     # Check header fields
     foreach ($requiredHeader in $SourceConfig.HeaderFields) {
         if ($headerColumns -notcontains $requiredHeader) {
             $bodyMessage = "Missing required header field '$requiredHeader' for $($SourceConfig.SourceName).`n`nRequired headers: $($SourceConfig.HeaderFields -join ', ')`n`nPlease verify the file format and try again."
             Send-ValidationEmail -EmailConfig $EmailConfig -Subject "$($EmailConfig.Subject) - Missing Header Field" -Body $bodyMessage
             Write-Host "Header field validation FAILED. Missing: $requiredHeader"
+            Remove-SFTPSession -SessionId $SFTPSession.SessionId
             return 1
         }
     }
-    
+
     Write-Host "Header validation passed successfully"
 
     # ===========================================
@@ -113,15 +170,15 @@ if (!(Test-Path -Path $TempDir)) {
     # ===========================================
     Write-Host "Step 2: Date validation for all employees..."
 
-    $inputFormat = $SourceConfig.DateFormat
-    $invalidHireDateList = @()
-    $missingHireDateList = @()
+    $inputFormat                = $SourceConfig.DateFormat
+    $invalidHireDateList        = @()
+    $missingHireDateList        = @()
     $invalidTerminationDateList = @()
 
     foreach ($employee in $employees) {
         $employeeNumber = $employee.EMPLOYEENUMBER
 
-        # Check hire dates
+        # Hire date
         if (![string]::IsNullOrWhiteSpace($employee.HIRE_DATE)) {
             try {
                 [DateTime]::ParseExact($employee.HIRE_DATE, $inputFormat, $null) | Out-Null
@@ -133,8 +190,8 @@ if (!(Test-Path -Path $TempDir)) {
             $missingHireDateList += $employee
             Write-Host "Missing hire date for employee $employeeNumber"
         }
-        
-        # Check termination dates (if present)
+
+        # Termination date (if present)
         if (![string]::IsNullOrWhiteSpace($employee.TERMINATION_DATE)) {
             try {
                 [DateTime]::ParseExact($employee.TERMINATION_DATE, $inputFormat, $null) | Out-Null
@@ -145,50 +202,43 @@ if (!(Test-Path -Path $TempDir)) {
         }
     }
 
-    # Create processing directory
-    $processingDir = Join-Path $BackupFolder "report"
-    if (-not (Test-Path $processingDir)) {
-        New-Item -Path $processingDir -ItemType Directory -Force
-    }
+    # Ensure remote report directory exists ahead of any uploads
+    Ensure-RemoteDir $ReportRemoteDir
 
-    # If date validation fails, send email and STOP
+    # If any date validation fails, upload CSV to SFTP/report, email, and STOP
     if ($invalidHireDateList.Count -gt 0) {
-        # Define CSV file path
-        $csvFileName = "invalid_hire_dates_$($SourceConfig.SourceName)_$today.csv"
-        $invalidHireDatePath = Join-Path $TempDir $csvFileName
-        $csvReportPath = "$BackupFolder/report"
-
-        # Export to CSV in temp directory
-        $invalidHireDateList | Export-Csv -FilePath $invalidHireDatePath -NoTypeInformation -Encoding UTF8
-        Write-Host "Temporary CSV file saved: $invalidHireDatePath"
-
-        # Upload to SFTP
-        Set-SFTPItem -SessionId $SFTPSession.SessionId -Path $localFilePath -Destination $csvReportPath
-        Write-Host "Status report uploaded to SFTP: $csvReportPath"
+        $localCsv = Join-Path $TempDir "invalid_hire_dates_$($SourceConfig.SourceName)_$todayStr.csv"
+        $invalidHireDateList | Export-Csv -Path $localCsv -NoTypeInformation -Encoding UTF8
+        Upload-Replace -LocalFilePath $localCsv -RemoteDir $ReportRemoteDir -RemoteFileName (Split-Path $localCsv -Leaf)
 
         $bodyMessage = "Found $($invalidHireDateList.Count) employees with invalid hire dates for $($SourceConfig.SourceName).`nExpected format: $($SourceConfig.DateFormat)`n`nPlease fix the dates and resubmit the file."
-        Send-ValidationEmail -EmailConfig $EmailConfig -Subject "$($EmailConfig.Subject) - Invalid Hire Dates" -Body $bodyMessage -AttachmentPath $invalidHireDatePath
-        Write-Host "Date validation FAILED - Invalid hire dates found"
+        Send-ValidationEmail -EmailConfig $EmailConfig -Subject "$($EmailConfig.Subject) - Invalid Hire Dates" -Body $bodyMessage -AttachmentPath $localCsv
+
+        Remove-SFTPSession -SessionId $SFTPSession.SessionId
         return 1
     }
 
     if ($missingHireDateList.Count -gt 0) {
-        $missingHireDatePath = Join-Path $processingDir "missing_hire_dates_$($SourceConfig.SourceName).csv"
-        $missingHireDateList | Export-Csv -Path $missingHireDatePath -NoTypeInformation
-        
+        $localCsv = Join-Path $TempDir "missing_hire_dates_$($SourceConfig.SourceName)_$todayStr.csv"
+        $missingHireDateList | Export-Csv -Path $localCsv -NoTypeInformation -Encoding UTF8
+        Upload-Replace -LocalFilePath $localCsv -RemoteDir $ReportRemoteDir -RemoteFileName (Split-Path $localCsv -Leaf)
+
         $bodyMessage = "Found $($missingHireDateList.Count) employees with missing hire dates for $($SourceConfig.SourceName).`n`nPlease provide hire dates for all employees and resubmit the file."
-        Send-ValidationEmail -EmailConfig $EmailConfig -Subject "$($EmailConfig.Subject) - Missing Hire Dates" -Body $bodyMessage -AttachmentPath $missingHireDatePath
-        Write-Host "Date validation FAILED - Missing hire dates found"
+        Send-ValidationEmail -EmailConfig $EmailConfig -Subject "$($EmailConfig.Subject) - Missing Hire Dates" -Body $bodyMessage -AttachmentPath $localCsv
+
+        Remove-SFTPSession -SessionId $SFTPSession.SessionId
         return 1
     }
 
     if ($invalidTerminationDateList.Count -gt 0) {
-        $invalidTermDatePath = Join-Path $processingDir "invalid_termination_dates_$($SourceConfig.SourceName).csv"
-        $invalidTerminationDateList | Export-Csv -Path $invalidTermDatePath -NoTypeInformation
-        
+        $localCsv = Join-Path $TempDir "invalid_termination_dates_$($SourceConfig.SourceName)_$todayStr.csv"
+        $invalidTerminationDateList | Export-Csv -Path $localCsv -NoTypeInformation -Encoding UTF8
+        Upload-Replace -LocalFilePath $localCsv -RemoteDir $ReportRemoteDir -RemoteFileName (Split-Path $localCsv -Leaf)
+
         $bodyMessage = "Found $($invalidTerminationDateList.Count) employees with invalid termination dates for $($SourceConfig.SourceName).`nExpected format: $($SourceConfig.DateFormat)`n`nPlease fix the dates and resubmit the file."
-        Send-ValidationEmail -EmailConfig $EmailConfig -Subject "$($EmailConfig.Subject) - Invalid Termination Dates" -Body $bodyMessage -AttachmentPath $invalidTermDatePath
-        Write-Host "Date validation FAILED - Invalid termination dates found"
+        Send-ValidationEmail -EmailConfig $EmailConfig -Subject "$($EmailConfig.Subject) - Invalid Termination Dates" -Body $bodyMessage -AttachmentPath $localCsv
+
+        Remove-SFTPSession -SessionId $SFTPSession.SessionId
         return 1
     }
 
@@ -199,30 +249,16 @@ if (!(Test-Path -Path $TempDir)) {
     # ===========================================
     Write-Host "Step 3: Calculating employee status for all employees..."
 
-    #$outputFormat = "yyyy-MM-dd'T'HH:mm:ss.fff'Z'"
-    $lcsRules = $SourceConfig.LcsCalculationRules
+    $lcsRules     = $SourceConfig.LcsCalculationRules
     $statusCounts = @{}
 
     foreach ($employee in $employees) {
-    
-        if ($null -eq $SourceConfig) {
-            Write-Error "SourceConfig is null."
-            return
-        }
-        if ($null -eq $employee) {
-            Write-Error "Employee object is null."
-            return
-        }
-        if ($null -eq $lcsRules) {
-            Write-Error "LcsRules is null."
-            return
-        }
-
-        # Calculate status using source-specific logic
+        if ($null -eq $SourceConfig) { Write-Error "SourceConfig is null."; return }
+        if ($null -eq $employee)     { Write-Error "Employee object is null."; return }
+        if ($null -eq $lcsRules)     { Write-Error "LcsRules is null."; return }
 
         $status = Get-EmployeeStatusBySource -SourceName $SourceConfig.SourceName -Employee $employee -LcsRules $lcsRules
 
-        # Count status
         if ($statusCounts.ContainsKey($status)) {
             $statusCounts[$status] += 1
         } else {
@@ -233,96 +269,62 @@ if (!(Test-Path -Path $TempDir)) {
     Write-Host "Status calculation completed. Status counts: $($statusCounts | ConvertTo-Json -Compress)"
 
     # ===========================================
-    # STEP 4: SAVE STATUS REPORT
+    # STEP 4: SAVE STATUS REPORT (SFTP with overwrite)
     # ===========================================
+    Write-Host "Step 4: Saving daily status report directly to SFTP..."
 
-Write-Host "Step 4: Saving daily status report directly to SFTP..."
+    $localJson = Join-Path $TempDir "status_count_$($SourceConfig.SourceName)_$todayStr.json"
+    $statusReport = @{
+        Date           = $todayStr
+        SourceName     = $SourceConfig.SourceName
+        TotalEmployees = $employees.Count
+        StatusCounts   = $statusCounts
+        ProcessedAt    = $timestamp
+    }
 
-# Prepare today's status report
-$today = Get-Date -Format "yyyy-MM-dd"
-$localFilePath = Join-Path $TempDir "status_count_$($SourceConfig.SourceName)_$today.json"
-#$remoteFileName = "status_count_$($SourceConfig.SourceName)_$today.json"
-$remotePath = "$BackupFolder/report"
-$reportFile = "$BackupFolder/report/status_count_$($SourceConfig.SourceName)_$today.json"
+    $statusReport | ConvertTo-Json -Depth 5 | Out-File -FilePath $localJson -Encoding UTF8
+    Upload-Replace -LocalFilePath $localJson -RemoteDir $ReportRemoteDir -RemoteFileName (Split-Path $localJson -Leaf)
 
-$statusReport = @{
-    Date = $today
-    SourceName = $SourceConfig.SourceName
-    TotalEmployees = $employees.Count
-    StatusCounts = $statusCounts
-    ProcessedAt = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
-}
-
-# Save JSON to temp file
-$statusReport | ConvertTo-Json -Depth 3 | Out-File -FilePath $localFilePath -Encoding UTF8
-Write-Host "Temporary status report saved: $localFilePath"
-
-# Check if remote file exists
-$reportFileExists = Get-SFTPChildItem -SessionId $SFTPSession.SessionId -Path $reportFile -ErrorAction SilentlyContinue
-
-if ($reportFileExists) {
-    Write-Host "Remote file exists. Removing before upload: $remotePath"
-    Remove-SFTPItem -SessionId $SFTPSession.SessionId -Path $reportFile -Force
-}
-
-# Upload to SFTP
-Set-SFTPItem -SessionId $SFTPSession.SessionId -Path $localFilePath -Destination $remotePath
-Write-Host "Status report uploaded to SFTP: $remotePath"
-
-# Clean up
-Remove-Item $localFilePath -Force
-Remove-SFTPSession -SessionId $SFTPSession.SessionId
     # ===========================================
     # STEP 5: TERMINATION SPIKE DETECTION
     # ===========================================
-Write-Host "Step 5: Checking for termination spikes..."
+    Write-Host "Step 5: Checking for termination spikes..."
 
-# Get today's date
-$today = Get-Date
-Write-Host "Today is: $($today.DayOfWeek)"
+    $todayDT = Get-Date
+    Write-Host "Today is: $($todayDT.DayOfWeek)"
 
-# Determine target date for report
-if ($today.DayOfWeek -eq 'Monday') {
-    $targetDate = $today.AddDays(-2).ToString("yyyy-MM-dd")  # Friday
-} else {
-    $targetDate = $today.AddDays(-1).ToString("yyyy-MM-dd") # Yesterday
-}
+    # Determine target date for report
+    if ($todayDT.DayOfWeek -eq 'Monday') {
+        $targetDate = $todayDT.AddDays(-2).ToString("yyyy-MM-dd")  # Friday
+    } else {
+        $targetDate = $todayDT.AddDays(-1).ToString("yyyy-MM-dd")  # Yesterday
+    }
+    Write-Host "Target Date: $targetDate"
 
-Write-Host "Target Date: $targetDate"
+    # Remote path for yesterday's status JSON on SFTP
+    $yesterdayRemoteJson = Join-Path $ReportRemoteDir "status_count_$($SourceConfig.SourceName)_$targetDate.json"
+    $yesterdayLocalJson  = Join-Path $TempDir "status_count_$($SourceConfig.SourceName)_$targetDate.json"
 
-# Build report path for the target date
-$yesterdayReportPath = "$BackupFolder/report/status_count_$($SourceConfig.SourceName)_$targetDate.json"
+    $terminationThreshold = $SourceConfig.LcsCalculationRules.TerminationThreshold
+    $todayTerminations    = if ($statusCounts.ContainsKey('terminated')) { $statusCounts['terminated'] } else { 0 }
 
-$termReportFileExists = Get-SFTPChildItem -SessionId $SFTPSession.SessionId -Path $yesterdayReportPath -ErrorAction SilentlyContinue
-Write-Host "Report Path: $yesterdayReportPath"
-        
-        # Get termination threshold and today's termination count
-        $terminationThreshold = $SourceConfig.LcsCalculationRules.TerminationThreshold
-        $todayTerminations = if ($statusCounts.ContainsKey('terminated')) { $statusCounts['terminated'] } else { 0 }
+    if (Download-IfExists -RemoteFilePath $yesterdayRemoteJson -LocalDestinationPath $yesterdayLocalJson) {
+        try {
+            $yesterdayReport        = Get-Content $yesterdayLocalJson | ConvertFrom-Json
+            $yesterdayTerminations  = if ($yesterdayReport.StatusCounts.terminated) { [int]$yesterdayReport.StatusCounts.terminated } else { 0 }
+            $terminationIncrease    = $todayTerminations - $yesterdayTerminations
 
-# Check if yesterday's report file exists
-        if (Test-Path $termReportFileExists) {
-             try {
-        # Load yesterday's report
-        $yesterdayReport = Get-Content $yesterdayReportPath | ConvertFrom-Json
-        $yesterdayTerminations = if ($yesterdayReport.StatusCounts.terminated) { $yesterdayReport.StatusCounts.terminated } else { 0 }
+            Write-Host "Termination Analysis:"
+            Write-Host "- Yesterday terminations: $yesterdayTerminations"
+            Write-Host "- Today terminations: $todayTerminations"
+            Write-Host "- Increase: $terminationIncrease"
+            Write-Host "- Threshold: $terminationThreshold"
 
-        # Calculate termination increase
-        $terminationIncrease = $todayTerminations - $yesterdayTerminations
+            if ($terminationIncrease -gt $terminationThreshold) {
+                Write-Host "TERMINATION SPIKE DETECTED!"
+                Write-Host "   Termination increase ($terminationIncrease) exceeds threshold ($terminationThreshold)"
 
-        Write-Host "Termination Analysis:"
-        Write-Host "- Yesterday terminations: $yesterdayTerminations"
-        Write-Host "- Today terminations: $todayTerminations"
-        Write-Host "- Increase: $terminationIncrease"
-        Write-Host "- Threshold: $terminationThreshold"
-
-        # Check if spike exceeds threshold
-        if ($terminationIncrease -gt $terminationThreshold) {
-            Write-Host "TERMINATION SPIKE DETECTED!"
-            Write-Host "   Termination increase ($terminationIncrease) exceeds threshold ($terminationThreshold)"
-
-            # Prepare alert email
-            $alertBody = @"
+                $alertBody = @"
 ALERT: Unusual termination spike detected for $($SourceConfig.SourceName)
 
 Yesterday terminations: $yesterdayTerminations
@@ -333,25 +335,23 @@ Threshold: $terminationThreshold
 Processing has been stopped for manual review.
 Please verify the data before reprocessing.
 
-Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+Generated: $timestamp
 "@
 
-            # Send alert
-            Send-ValidationEmail -EmailConfig $EmailConfig -Subject "$($EmailConfig.Subject) TERMINATION SPIKE ALERT" -Body $alertBody
-
-            Write-Host "Stopping process - mandatory field validation skipped due to termination spike"
-            return 1
-        } else {
-            Write-Host "Termination increase within acceptable range"
+                Send-ValidationEmail -EmailConfig $EmailConfig -Subject "$($EmailConfig.Subject) TERMINATION SPIKE ALERT" -Body $alertBody
+                Write-Host "Stopping process - mandatory field validation skipped due to termination spike"
+                Remove-SFTPSession -SessionId $SFTPSession.SessionId
+                return 1
+            } else {
+                Write-Host "Termination increase within acceptable range"
+            }
+        } catch {
+            Write-Host "Could not read/parse yesterday's report: $_"
+            Write-Host "Proceeding with validation (file issue)"
         }
-    } catch {
-        Write-Host "Could not read yesterday's report: $_"
-        Write-Host "Proceeding with validation (file issue)"
+    } else {
+        Write-Host "No yesterday report found on SFTP - proceeding with validation (first run)"
     }
-} else {
-    Write-Host "No yesterday report found - proceeding with validation (first run)"
-}
-
 
     # ===========================================
     # STEP 6: MANDATORY FIELD VALIDATION (NON-TERMINATED ONLY)
@@ -362,28 +362,14 @@ Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
     $nonTerminatedCount = 0
 
     foreach ($employee in $employees) {
-        $employeeNumber = $employee.EMPLOYEENUMBER
-        <#$employeeStartDate = if (![string]::IsNullOrWhiteSpace($employee.HIRE_DATE)) { $employee.HIRE_DATE } else { "NoValue" }
-        $employeeStatus = $employee.EMPLOYEE_STATUS
-
-        # Parse hire date (guaranteed to be valid from Step 2)
-        $convertedHireDateDT = $null
-        if (![string]::IsNullOrWhiteSpace($employee.HIRE_DATE)) {
-            $convertedHireDateDT = [DateTime]::ParseExact($employee.HIRE_DATE, $inputFormat, $null)
-        }#>
-
-        # Calculate status using source-specific logic
         $status = Get-EmployeeStatusBySource -SourceName $SourceConfig.SourceName -Employee $employee -LcsRules $lcsRules
 
-        # Check mandatory fields ONLY for non-terminated employees
         if ($status -ne 'terminated') {
             $nonTerminatedCount++
-            
             $missingFields = @()
-            
+
             foreach ($field in $SourceConfig.MandatoryFields) {
                 $value = $employee.$field
-                
                 if ($null -eq $value) {
                     $missingFields += $field
                 } elseif ($value -is [string] -and [string]::IsNullOrWhiteSpace($value)) {
@@ -392,16 +378,13 @@ Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
             }
 
             if ($missingFields.Count -gt 0) {
-                # Get employee name based on source configuration
                 $employeeName = Get-EmployeeName -Employee $employee -SourceConfig $SourceConfig
-
                 $validationMessages += [PSCustomObject]@{
-                    EmployeeName  = $employeeName
-                    EmployeeNumber = $employeeNumber
+                    EmployeeName   = $employeeName
+                    EmployeeNumber = $employee.EMPLOYEENUMBER
                     EmployeeStatus = $status
-                    MissingFields = ($missingFields -join ', ')
+                    MissingFields  = ($missingFields -join ', ')
                 }
-                
                 Write-Host "Non-terminated employee $employeeName ($status) has missing fields: $($missingFields -join ', ')"
             }
         }
@@ -411,58 +394,68 @@ Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
     Write-Host "   Found $($validationMessages.Count) employees with missing mandatory fields"
 
     # ===========================================
-    # STEP 7: EMAIL REPORTING
+    # STEP 7: EMAIL REPORTING (save to SFTP/report with overwrite)
     # ===========================================
     Write-Host "Step 7: Sending validation reports..."
 
-    # Send validation issues report (only for non-terminated employees with missing fields)
     if ($validationMessages.Count -gt 0) {
-        $csvPath = Join-Path $processingDir "HR_Validation_Report_$($SourceConfig.SourceName).csv"
-        $validationMessages | Export-Csv -Path $csvPath -NoTypeInformation
-        Write-Host "$csvPath"
-        
-        $bodyMessage = "Found $($validationMessages.Count) non-terminated employees with missing mandatory fields for $($SourceConfig.SourceName).`n`nGenerated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')`n`nPlease review the attached report and provide the missing information."
-        
-        Send-ValidationEmail -EmailConfig $EmailConfig -Subject "$($EmailConfig.Subject) - Missing Mandatory Fields" -Body $bodyMessage -AttachmentPath $csvPath
-        
-        Write-Host "Validation issues report sent: $($validationMessages.Count) employees"
+        $localCsv = Join-Path $TempDir "HR_Validation_Report_$($SourceConfig.SourceName)_$todayStr.csv"
+        $validationMessages | Export-Csv -Path $localCsv -NoTypeInformation -Encoding UTF8
+
+        Upload-Replace -LocalFilePath $localCsv -RemoteDir $ReportRemoteDir -RemoteFileName (Split-Path $localCsv -Leaf)
+
+        $bodyMessage = "Found $($validationMessages.Count) non-terminated employees with missing mandatory fields for $($SourceConfig.SourceName).`n`nGenerated: $timestamp`n`nPlease review the attached report and provide the missing information."
+        Send-ValidationEmail -EmailConfig $EmailConfig -Subject "$($EmailConfig.Subject) - Missing Mandatory Fields" -Body $bodyMessage -AttachmentPath $localCsv
+
+        Write-Host "Validation issues report sent and uploaded: $($validationMessages.Count) employees"
     } else {
         Write-Host "No validation issues found for non-terminated employees"
     }
 
     # ===========================================
-    # STEP 8: CONDITIONAL FILE PROCESSING
+    # STEP 8: CONDITIONAL FILE PROCESSING (using SFTP paths)
     # ===========================================
-    Write-Host "Step 8: File processing based on validation results..."
+    Write-Host "Step 8: File processing based on validation results (SFTP)..."
 
-      $SourceFileName = $($SourceConfig.SourceFileName)
-      $sourceFilePath = Join-Path $SourceFolder $SourceFileName
-      $hasValidationFailures = ($validationMessages.Count -gt 0)
+    $SourceFileName         = $SourceConfig.SourceFileName
+    $sourceRemotePath       = Join-Path $SourceFolder $SourceFileName
+    $sourceRemotePath       = Normalize-RemotePath $sourceRemotePath
+    $hasValidationFailures  = ($validationMessages.Count -gt 0)
 
-      $processingFolder = Join-Path -Path $SourceFolder -ChildPath "processing"
+    $processingRemoteDir    = Normalize-RemotePath (Join-Path $SourceFolder "processing")
+    Ensure-RemoteDir $processingRemoteDir
 
-        # Check if the folder exists; if not, create it
-        if (-not (Test-Path -Path $processingFolder)) {
-            New-Item -ItemType Directory -Path $processingFolder | Out-Null
-        }
-
-        # Now join the full file path
-        $sailpointProcessingFilePath = Join-Path -Path $processingFolder -ChildPath $SourceFileName
+    $processingRemoteTarget = Normalize-RemotePath (Join-Path $processingRemoteDir $SourceFileName)
+    $tempSourceLocalPath    = Join-Path $TempDir $SourceFileName
 
     if ($SourceConfig.processValidation) {
         if (-not $hasValidationFailures) {
-            Get-SFTPItem -SessionId $SFTPSession.SessionId -Path $sourceFilePath -Destination $sailpointProcessingFilePath
-            Write-Host "File copied to backup folder (strict mode - validation passed): $sailpointProcessingFilePath"
+            # Copy within SFTP by download -> upload
+            if (Download-IfExists -RemoteFilePath $sourceRemotePath -LocalDestinationPath $tempSourceLocalPath) {
+                Upload-Replace -LocalFilePath $tempSourceLocalPath -RemoteDir $processingRemoteDir -RemoteFileName $SourceFileName
+                Write-Host "File copied to SFTP processing folder (strict mode - validation passed): $processingRemoteTarget"
+            } else {
+                Write-Host "Source file not found on SFTP: $sourceRemotePath"
+                Remove-SFTPSession -SessionId $SFTPSession.SessionId
+                return 1
+            }
         } else {
-            Write-Host "File NOT copied to processing folder (validation failures found)"
+            Write-Host "File NOT copied to SFTP processing folder (validation failures found)"
             Write-Host "Missing mandatory fields: $($validationMessages.Count) employees"
+            Remove-SFTPSession -SessionId $SFTPSession.SessionId
             return 1
         }
     } else {
-            Get-SFTPItem -SessionId $SFTPSession.SessionId -Path $sourceFilePath -Destination $sailpointProcessingFilePath
-            Write-Host "File copied to backup folder (strict mode - validation passed): $sailpointProcessingFilePath"
-        if ($hasValidationFailures) {
-            Write-Host "Note: File copied despite $($validationMessages.Count) validation issues"
+        if (Download-IfExists -RemoteFilePath $sourceRemotePath -LocalDestinationPath $tempSourceLocalPath) {
+            Upload-Replace -LocalFilePath $tempSourceLocalPath -RemoteDir $processingRemoteDir -RemoteFileName $SourceFileName
+            Write-Host "File copied to SFTP processing folder (non-strict mode): $processingRemoteTarget"
+            if ($hasValidationFailures) {
+                Write-Host "Note: File copied despite $($validationMessages.Count) validation issues"
+            }
+        } else {
+            Write-Host "Source file not found on SFTP: $sourceRemotePath"
+            Remove-SFTPSession -SessionId $SFTPSession.SessionId
+            return 1
         }
     }
 
@@ -475,13 +468,15 @@ Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
     Write-Host "- Missing field issues: $($validationMessages.Count)"
     Write-Host "- File processing mode: $($SourceConfig.processValidation)"
     Write-Host "=========================================="
+
+    # Cleanup SFTP session
+    Remove-SFTPSession -SessionId $SFTPSession.SessionId
     return 0
 }
 
 # ===========================================
 # HELPER FUNCTIONS
 # ===========================================
-
 function Get-EmployeeName {
     param (
         $Employee,
@@ -489,9 +484,8 @@ function Get-EmployeeName {
     )
 
     $nameFields = $SourceConfig.EmployeeNameFields
-    $firstName = $Employee.($nameFields.FirstName)
-    $lastName = $Employee.($nameFields.LastName)
-    
+    $firstName  = $Employee.($nameFields.FirstName)
+    $lastName   = $Employee.($nameFields.LastName)
     return "$firstName $lastName"
 }
 
