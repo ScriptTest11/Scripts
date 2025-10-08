@@ -1,1 +1,121 @@
 
+# ===========================================
+# HCM STATUS CALCULATOR
+# ===========================================
+function Get-HCMEmployeeStatus {
+    param (
+        $employee,
+        $LcsRules
+    )
+
+    $outputFormat = "yyyy-MM-dd'T'HH:mm:ss.fff'Z'"
+    $nowRaw = [DateTime]::UtcNow
+    $nowRounded = $nowRaw.AddMilliseconds(500 - ($nowRaw.Millisecond % 1000))
+    $now = $nowRounded.ToString($outputFormat)
+    $nowRoundedToDay = [DateTime]::UtcNow.Date
+    $employeeNumber = $employee.EMPLOYEENUMBER
+    $employeeName= $employee.FIRST_NAME
+
+                $hireDateInput = $null
+        if (![string]::IsNullOrWhiteSpace($employee.HIRE_DATE)) {
+            try {
+                $hireDateInput = [DateTime]::ParseExact($employee.HIRE_DATE, "MM-dd-yyyy", $null)
+            } catch {
+                Write-Host "Invalid HIRE_DATE format for EMPLOYEE NUMBER: $($employeeNumber): $($employee.HIRE_DATE)"
+                $invalidHireDateList += $employee
+            }
+			}
+
+            $termDateInput = $null
+        if (![string]::IsNullOrWhiteSpace($employee.TERMINATION_DATE)) {
+            try {
+                $termDateInput = [DateTime]::ParseExact($employee.TERMINATION_DATE, "MM-dd-yyyy", $null)
+            } catch {
+                Write-Host "Invalid TERMINATION_DATE format for EMPLOYEE NUMBER: $($employeeNumber): $($employee.TERMINATION_DATE)"
+            }
+        }
+
+        $termDate = if ($termDateInput) { "yes" } else { "no" }
+        
+        $employeeStatus = $employee.EMPLOYEE_STATUS
+        $employeeStartDate = if (![string]::IsNullOrWhiteSpace($employee.HIRE_DATE)) { $employee.HIRE_DATE } else { "NoValue" }
+
+        $convertedHireDateDT = $hireDateInput
+        $convertedHireDatepreHire = if ($convertedHireDateDT) { $convertedHireDateDT.AddDays(-14).Date } else { $null }
+        $convertedEmpHireDate = if ($convertedHireDateDT) { $convertedHireDateDT.AddDays(+2) } else { $null }
+        $convertedEmpHireDateOneDay = if ($convertedHireDateDT) { $convertedHireDateDT.AddDays(-1) } else { $null }
+
+        $empHireDateNegativeConditionLogic = if ($convertedEmpHireDateOneDay -lt $nowRoundedToDay) { "NEWHIRE" } else { "FUTUREHIRE" }
+        $termDateCalcNow = $nowRoundedToDay.AddDays(-15)
+
+        $beforeHireDate = if ($convertedHireDateDT -and $nowRoundedToDay -gt $convertedHireDateDT) { "yes" } else { "no" }
+        $fourteenDaysBeforeStartDate = if ($convertedHireDatepreHire -and $nowRoundedToDay -gt $convertedHireDatepreHire) { "yes" } else { "no" }
+        $empHireDate = if ($convertedEmpHireDate -and $convertedEmpHireDate -lt $nowRoundedToDay) { "EXISTING" } else { $empHireDateNegativeConditionLogic }
+        $fourteenDaysOrMoreBeforeStartDate = if ($convertedHireDatepreHire -and $nowRoundedToDay -lt $convertedHireDatepreHire) { "yes" } else { "no" }
+
+        # Status determination
+        if ($termDate -eq 'no' -and $employeeStartDate -eq 'NoValue' -and $employeeStatus.StartsWith('Active')) {
+            $status = 'prehire'
+        } elseif ($fourteenDaysOrMoreBeforeStartDate -eq 'yes' -and $beforeHireDate -eq 'no') {
+            $status = 'prehire'
+        } elseif ($fourteenDaysBeforeStartDate -eq 'yes' -and $beforeHireDate -eq 'no') {
+            $status = 'hire'
+        } elseif ($empHireDate -eq 'NEWHIRE') {
+            $status = 'hire'
+        } elseif ($termDate -eq 'no' -and $employeeStatus.StartsWith('Active')) {
+            $status = 'active'
+        } elseif ($employeeStatus -in @('Leave of Absence', 'Suspended - Payroll Eligible', 'Suspended - No Payroll')) {
+            $status = 'active'
+        } elseif ($termDate -eq 'no' -and $employeeStatus.StartsWith('Inactive')) {
+            $status = 'active'
+        } elseif ($termDate -eq 'no' -and $employeeStatus -eq 'Layoff') {
+            $status = 'active'
+        } elseif ($termDate -eq 'yes' -and $employeeStatus.StartsWith('Inactive') -and $employeeStartDate -eq 'NoValue' ) {
+            $status = 'terminated'
+        } elseif ($termDate -eq 'yes' -and $employeeStatus -eq 'Layoff' -and $employeeStartDate -eq 'NoValue') {
+            $status = 'terminated'
+        } elseif ($termDate -eq 'yes' -and $employeeStatus -eq 'Layoff') {
+            $status = 'terminated'
+        } elseif ($termDate -eq 'yes' -and $employeeStatus.StartsWith('Inactive')) {
+            $status = 'terminated'
+        } else {
+        Write-Host "Unknown status Employee Number: $employeeNumber"
+        Write-Host "Unknown status Employee Name:$employeeName"
+            $status = 'unknown'
+        }
+    return $status
+}
+
+# ===========================================
+# PRODENSA STATUS CALCULATOR
+# ===========================================
+
+# ===========================================
+# FACTORY FUNCTION
+# ===========================================
+function Get-EmployeeStatusBySource {
+    param (
+        [string]$SourceName,
+        $Employee,
+        $LcsRules
+        
+    )
+    
+    switch ($SourceName) {
+        "HCM" { 
+            return Get-HCMEmployeeStatus -Employee $Employee -LcsRules $LcsRules 
+        }
+        "Tress" { 
+            return Get-TressEmployeeStatus -Employee $Employee -LcsRules $LcsRules 
+        }
+        "Prodensa" { 
+            return Get-ProdensaEmployeeStatus -Employee $Employee -LcsRules $LcsRules
+        }
+        default { 
+            Write-Error "Unknown source: $SourceName"
+            return "unknown"
+        }
+    }
+}
+
+Export-ModuleMember -Function Get-EmployeeStatusBySource
