@@ -1,1 +1,217 @@
 
+Install-Module -Name Posh-SSH -Force -Scope CurrentUser -AllowClobber
+Import-Module Posh-SSH
+Import-Module -Name "" -Force
+Import-Module -Name "" -Force
+
+function Run-HCM-FileMover {
+   param (
+     [string]$password,
+     [string]$sftpUser,
+     [string]$sftpHost,
+     [string]$HCMFolder,
+     [string]$HCMbackupFolder,
+     [string]$HCMFileName,
+     [string]$emailFrom,
+     [string]$HCMemailTo,
+     [string]$sailpointTeamCC
+    )
+  
+    $sailpointTeamCCArray = $sailpointTeamCC -split ',' | Where-Object { $_.Trim() -ne '' } | ForEach-Object { $_.Trim() }
+    $HCMemailToArray = $HCMemailTo -split ',' | Where-Object { $_.Trim() -ne '' } | ForEach-Object { $_.Trim() }
+    
+    $smtpServer = "AZSCUSEXP01.ONERHEEM.com"
+    $SecurePass = ConvertTo-SecureString $password -AsPlainText -Force
+    $Credential = New-Object System.Management.Automation.PSCredential ($sftpUser, $SecurePass)
+
+   $TempDir = Join-Path $env:TEMP "SFTPTemp"
+    if (!(Test-Path -Path $TempDir)) {
+        New-Item -Path $TempDir -ItemType Directory -Force | Out-Null
+    }
+
+    Write-Host "HCM Script started."
+
+   try {
+        $SFTPSession = New-SFTPSession -ComputerName $sftpHost -Credential $Credential -AcceptKey -Verbose
+        Write-Host "SFTP session established to $sftpHost."
+       
+        $files = Get-SFTPChildItem -SessionId $SFTPSession.SessionId -Path $HCMFolder
+        Write-Host "Connected $HCMFolder."
+        
+        $estZone = [System.TimeZoneInfo]::FindSystemTimeZoneById("Eastern Standard Time")
+        $today = [System.TimeZoneInfo]::ConvertTimeFromUtc((Get-Date).ToUniversalTime(), $estZone).Date
+        Write-Host "EST Date Time today: $today"
+
+        $hcmFile = $files | Where-Object {
+            $_.Name -eq "$HCMFileName" -and
+            $_.LastWriteTime.Date -eq $today
+        }
+
+        if ($hcmFile) {
+            $timestamp = Get-Date -Format "yyyyMMddHHmmss"
+            $backupFileName = "$HCMFileName-$timestamp"
+            $localFilePath = Join-Path $TempDir $HCMFileName
+            $backupFilePath = Join-Path $TempDir $backupFileName
+
+            Get-SFTPItem -SessionId $SFTPSession.SessionId -Path "$HCMFolder/$HCMFileName" -Destination $TempDir
+            Write-Host "Downloaded $HCMFileName to $localFilePath."
+            
+            Rename-Item -Path $localFilePath -NewName $backupFileName
+            Write-Host "File renamed to $backupFileName."
+
+            Set-SFTPItem -SessionId $SFTPSession.SessionId -Path $backupFilePath -Destination "$HCMbackupFolder"
+            Write-Host "Uploaded $backupFilePath to $HCMbackupFolder/$backupFileName."
+
+        # ===========================================
+        # GET HCM SOURCE CONFIGURATION
+        # ===========================================
+        Write-Host "Loading HCM source configuration..."
+        $sourceConfig = Get-SourceConfig -SourceName "HCM"
+        
+        # Validate the configuration
+        if (-not (Validate-SourceConfig -Config $sourceConfig)) {
+            Write-Error "HCM source configuration validation failed"
+            exit 1
+        }
+        Write-Host "=========================================="
+        Write-Host "   HCM configuration loaded successfully"
+        Write-Host "   Expected headers: $($sourceConfig.HeaderCount)"
+        Write-Host "   Date format: $($sourceConfig.DateFormat)"
+        Write-Host "   Mandatory fields: $($sourceConfig.MandatoryFields.Count)"
+        Write-Host "   Process validation: $($sourceConfig.processValidation)"
+        Write-Host "   Termination threshold: $($sourceConfig.LcsCalculationRules.TerminationThreshold)"
+        Write-Host "=========================================="
+
+        # ===========================================
+        # PREPARE EMAIL CONFIGURATION
+        # ===========================================
+        $emailConfig = @{
+            FromAddress = $emailFrom
+            ToAddress = $HCMemailToArray
+            CcAddress = $sailpointTeamCCArray
+            SmtpServer = $smtpServer
+            Subject = "SailPoint - HCM HR File Validation $today"
+        }
+
+        # ===========================================
+        # START VALIDATION
+        # ===========================================
+        $validationResult = Start-Validation `
+            -SourceConfig $sourceConfig `
+            -BackupFilePath $backupFilePath.Trim() `
+            -EmailConfig $emailConfig `
+            -BackupFolder $HCMBackupFolder `
+            -SourceFolder $HCMFolder `
+            -Password $password `
+            -SftpUser $sftpUser `
+            -SftpHost $sftpHost
+        # ===========================================
+        # PROCESS RESULTS
+        # ===========================================
+        if ($validationResult -eq 0) {
+            Write-Host "HCM validation completed successfully"
+            Write-Host "File has been processed and backed up"
+        } else {
+            Write-Host "HCM validation completed with issues (Exit Code: $validationResult)"
+            Write-Host "Check email reports for details"
+        }
+
+        Write-Host "=========================================="
+        Write-Host "HCM Processing completed with exit code: $validationResult"
+        Write-Host "=========================================="
+        
+        exit $validationResult
+        
+    } else {
+        Write-Host "$HCMFileName not received today"
+        Write-Host "Expected location: $fullPath"
+
+        # ===========================================
+        # SEND FILE MISSING NOTIFICATION
+        # ===========================================
+        $subject = "SailPoint - HCM HR File Missing Notification - $today"
+        $body = @"
+    <html>
+    <body>
+    <h2>HCM HR File Missing Notification</h2>
+    <p><strong>Hello Team,</strong></p>
+    <p>This is a notification that the HCM HR file <strong>$HCMFileName</strong> was not received on <strong>$today</strong>.</p>
+
+    <h3>Details:</h3>
+    <ul>
+    <li><strong>Expected File:</strong> $HCMFileName</li>
+    </ul>
+
+    <h3>Next Steps:</h3>
+    <ol>
+    <li>Please upload the file to the shared location at your earliest convenience</li>
+    </ol>
+
+    <p>Thank you for your attention.</p>
+    <br>
+    <p><strong>Thank You</strong><br>
+    <em>Cybersecurity Team</em><br>
+    <em>Automated HR File Validation System</em></p>
+    </body>
+    </html>
+"@
+
+        # Send file missing notification
+        try {
+            Send-MailMessage -From $emailFrom `
+                           -To $HCMemailToArray `
+                           -Cc $sailpointTeamCCArray `
+                           -Subject $subject `
+                           -Body $body `
+                           -BodyAsHtml `
+                           -SmtpServer $smtpServer
+            
+            Write-Host "File missing notification sent successfully"
+        } catch {
+            Write-Error "Failed to send file missing notification: $_"
+        }
+
+        Write-Host "=========================================="
+        Write-Host "HCM Processing completed - File not found"
+        Write-Host "=========================================="
+        
+        exit 0  # Not an error - just file not received yet
+    }
+}
+catch {
+    Write-Host "=========================================="
+    Write-Host "CRITICAL ERROR in HCM processing: $_"
+    Write-Host "=========================================="
+    
+    # Send error notification
+    try {
+        $errorSubject = "SailPoint - HCM Processing Error - $today"
+        $errorBody = @"
+<html>
+<body>
+<h2>HCM Processing Error</h2>
+<p><strong>Critical Error Occurred:</strong></p>
+<pre>$_</pre>
+<p><strong>Time:</strong> $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')</p>
+<p><strong>File:</strong> $HCMFileName</p>
+<p>Please investigate and resolve the issue.</p>
+<p><em>Automated HR File Validation System</em></p>
+</body>
+</html>
+"@
+        
+        Send-MailMessage -From $emailFrom `
+                       -To $HCMemailToArray `
+                       -Cc $sailpointTeamCCArray `
+                       -Subject $errorSubject `
+                       -Body $errorBody `
+                       -BodyAsHtml `
+                       -SmtpServer $smtpServer
+    } catch {
+        Write-Host "Failed to send error notification: $_"
+    }
+    
+    exit 1
+}
+}
+Run-HCM-FileMover -password $args[0] -sftpUser $args[1] -sftpHost $args[2] -HCMFolder $args[3] -HCMbackupFolder $args[4] -HCMFileName $args[5] -emailFrom $args[6] -HCMemailTo $args[7] -sailpointTeamCC $args[8]
