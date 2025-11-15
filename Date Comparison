@@ -1,0 +1,79 @@
+# Path to the JSON source and the CSV destination
+$jsonPath = "users.json"
+$csvPath  = "users.csv"
+
+# Candidate date formats to try before falling back to culture-aware parsing
+$dateFormats = @(
+    "yyyy-MM-dd","yyyy/MM/dd","yyyy.MM.dd",
+    "MM-dd-yyyy","MM/dd/yyyy","MM.dd.yyyy",
+    "dd-MM-yyyy","dd/MM/yyyy","dd.MM.yyyy",
+    "MMM dd, yyyy","dd MMM yyyy","MMM d yyyy","MMMM dd, yyyy",
+    "yyyyMMdd","ddMMyyyy","MMddyyyy","yyyy-MM-ddTHH:mm:ss","yyyy-MM-ddTHH:mm:ssZ"
+)
+
+function Convert-ToIsoDate {
+    param (
+        [Parameter(Mandatory=$false)]
+        [string]$InputDate
+    )
+
+    if ([string]::IsNullOrWhiteSpace($InputDate)) {
+        return $null
+    }
+
+    $trimmed = $InputDate.Trim()
+
+    foreach ($format in $dateFormats) {
+        if ([datetime]::TryParseExact($trimmed, $format, $null, [System.Globalization.DateTimeStyles]::AssumeLocal, [ref]$parsedExact)) {
+            return $parsedExact.ToString("yyyy-MM-dd")
+        }
+    }
+
+    if ([datetime]::TryParse($trimmed, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeLocal, [ref]$parsedInvariant)) {
+        return $parsedInvariant.ToString("yyyy-MM-dd")
+    }
+
+    if ([datetime]::TryParse($trimmed, [System.Globalization.CultureInfo]::CurrentCulture, [System.Globalization.DateTimeStyles]::AssumeLocal, [ref]$parsedCurrent)) {
+        return $parsedCurrent.ToString("yyyy-MM-dd")
+    }
+
+    return $null
+}
+
+if (-not (Test-Path -Path $jsonPath -PathType Leaf)) {
+    throw "JSON file not found at path: $jsonPath"
+}
+
+$rawJson = Get-Content -LiteralPath $jsonPath -Raw
+if (-not $rawJson) {
+    throw "JSON file is empty or unreadable at path: $jsonPath"
+}
+
+$users = $rawJson | ConvertFrom-Json
+
+if (-not $users) {
+    throw "No user records found in JSON."
+}
+
+$rows = foreach ($user in $users) {
+    $attributes = $user.attributes
+
+    $startDateRaw = $attributes.startDate
+    $hireDateRaw  = $attributes.HireDate
+
+    $startDateIso = Convert-ToIsoDate -InputDate $startDateRaw
+    $hireDateIso  = Convert-ToIsoDate -InputDate $hireDateRaw
+
+    $resolvedStart = if ($startDateIso) { $startDateIso } elseif ($hireDateIso) { $hireDateIso } else { $null }
+    $resolvedHire  = if ($hireDateIso)  { $hireDateIso }  elseif ($startDateIso) { $startDateIso } else { $null }
+
+    [pscustomobject]@{
+        Id        = $user.id
+        Name      = $user.name
+        StartDate = $resolvedStart
+        HireDate  = $resolvedHire
+    }
+}
+
+$rows | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
+"CSV written to $csvPath"
