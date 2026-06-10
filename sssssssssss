@@ -1,6 +1,1 @@
-I am writing to bring to your attention a production issue identified in the user file.
-The hire date format has been modified. It was previously provided in dd-mmm-yyyy format and has now been received in dd-yyyy-mm format. As a result, the lifecycle state of active users was changed to "prehire."
-At present there is no operational impact, and all users are able to log in as normal. The issue was serious in nature and could have resulted in the disablement or termination of active user accounts. The remediation effort to restore the affected accounts will require several days of work from our team.
-We request that the HR team treat this matter with priority and take the necessary steps to prevent a recurrence.
-A test file was also found in the SFTP folder. Only production files can be processed, as test files are not supported. We request that the team adhere to the agreed file design to avoid such occurrences.
-We would also like to highlight a discrepancy in the user count. The previous file contained 210 users, while today's file contains only 119 users. We request your confirmation regarding the reason for this reduction.
+
