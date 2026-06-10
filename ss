@@ -1,20 +1,18 @@
 Short Description
-Provision PIM roles through SailPoint with automatic creation of secondary account
+Update SailPoint workflow to add additional email recipient for Australia team
 Description
-This change provisions PIM roles through SailPoint, creating a secondary account and assigning the requested role in real time. It also removes the access at the time of termination or when removal is requested. The change is for existing users in production who request PIM roles.
+This change updates the SailPoint workflow to add an additional team member as an email recipient for Australia. At present, the email is sent only to the manager. After this change, the additional team member will also receive the email. The change is for the existing workflow in production.
 Justification
-At present, granting PIM roles is a manual process that requires effort from the team for each request. With this change, the provisioning will be automated through SailPoint, so the secondary account is created and the role is assigned as soon as the request is approved. It also removes the access at the time of termination or when removal is requested, which strengthens our security governance. This reduces the turnaround time for users and the manual workload on the team. Without this change, provisioning will continue to be manual and access delivery will remain slow.
+At present, the workflow sends the email only to the manager, so the Australia team member does not get the notification. With this change, the additional team member will also be included as a recipient, which keeps the right people informed and improves the visibility for the Australia team.
 Implementation Plan
 
-Take backup of the source.
-Disable the source.
-Promote the rule from development to production.
-Create the access profile.
-Create the role.
+Disable the workflow.
+Take backup of the workflow.
+Update the workflow with the additional recipient.
 
 Risk and Impact Analysis
-Risk level is High. This change is performed in production on existing users. The impact of SailPoint is to create the secondary account and assign the requested role in real time, which reduces the downtime of the manual work.
+Risk level is Low. This change is only to update the email recipient in the workflow and does not change any provisioning or access.
 Backout Plan
-Revert the cloud rule.
+Re-upload the workflow from the backup.
 Test Plan
-Testing will be performed on one existing user and one new user. For both, confirm that SailPoint creates the secondary account and assigns the requested PIM role correctly and in real time. Confirm the role and entitlements match the request, and obtain sign off from the IAM team once both cases pass.
+Testing will be performed on an existing contractor. Validate that the email has been sent out from SailPoint to the additional recipient, and confirm with the Australia team that they have received it.
