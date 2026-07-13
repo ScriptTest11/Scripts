@@ -1,0 +1,32 @@
+Ownership & purpose	
+1	current business/technical owner? 
+2	What business function or process does this app support?
+Criticality	
+3	Business impact if the app is unavailable? (Critical / High / Med / Low)
+4	Max tolerable downtime (RTO) and acceptable data loss (RPO)?
+5	Does it directly support revenue, safety, or legal/regulatory obligations?
+Data & compliance	
+6	What data does it hold? (PII / PHI / PCI-financial / confidential / public)
+7	Is it subject to compliance? (SOX / PCI / HIPAA / GDPR / other)
+Hosting & infrastructure	
+8	Where is the app hosted? (On-premises / Private cloud / Public cloud / SaaS / Vendor-hosted)
+9	If cloud or SaaS, which provider & product? (Azure / AWS / GCP / vendor name)
+10	Server / host details (server names, OS, IP/URL) if on-prem or IaaS
+11	Hosting / data location (region or country) — any data-residency requirements?
+12	Is it internally managed or vendor-managed? Vendor / support contact?
+13	Which environments exist? (Prod / Test / Dev / DR)
+Access & identity	
+14	Approx. number of users? Number of privileged / admin users?
+15	How do users sign in? (Entra SSO / MFA / local accounts / legacy auth)
+16	Is it integrated with AD / Entra, or does it keep its own local user directory?
+17	Is access managed through SailPoint today? (Yes / No / Partial)
+18	Are privileged / admin credentials vaulted in Delinea? (Yes / No)
+19	Does it use service / non-human accounts or automation agents? List them.
+20	Are there shared / generic / default or break-glass accounts?
+21	Do any third parties / vendors have access? How is that access managed?
+22	Is the application internet-facing / externally accessible?
+Lifecycle & roadmap	
+23	How is access granted & removed today? (manual / automated JML)
+24	Who approves access requests for this app today?
+25	When was access last reviewed or certified?
+26	Is the app scheduled for upgrade, migration, or decommission?
