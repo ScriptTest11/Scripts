@@ -1,0 +1,65 @@
+1. Application inventory & criticality			
+1	Export the full application list from LeanIX	2	16
+2	Validate completeness (reconcile vs Entra enterprise apps / SSO list)	3	24
+3	Define the criticality criteria & scoring scale	3	24
+4	Finalize & send the owner questionnaire (with follow-up/escalation plan)	2	16
+5	Score & rank the apps → identify the top 10	3	24
+6	Capture SSO coverage & legacy/modern auth status per app	5	40
+7	Write the Application Criticality & Classification Standard	3	24
+8	Record the criticality ratings back into LeanIX	1	8
+	Subtotal	22	176
+2. Account & identity inventory			
+1	Pull all accounts (AD, Entra, apps) and HR Contractor feeds	3	24
+2	Tag human vs non-human; correlate human accounts to HR	10	80
+3	Identify secondary accounts, link to primary	3	24
+4	Classify non-human accounts by type and assign an owner to each	5	40
+5	Map non-human account dependencies (what systems/apps use each)	3	24
+6	Capture MFA status per user by each app	3	24
+7	Produce the consolidated account inventory	3	24
+	Subtotal	30	240
+3. Privileged access classification			
+1	Define what 'privileged' means (roles, groups, high-risk entitlements)	5	40
+2	Extract privileged groups/roles/entitlements from AD, Entra, apps	10	80
+3	Tag accounts & entitlements privileged vs non-privileged (human & non-human)	10	80
+4	Build the privileged access register	3	24
+5	Write the Privileged Access Definition & Standard	3	24
+	Subtotal	31	248
+4. Gap analysis			
+1	Reconcile inventory vs SailPoint-managed → unmanaged accounts gap	5	40
+2	Reconcile privileged register vs Delinea-vaulted → unvaulted gap	3	24
+3	Identify authentication gaps (MFA/CA coverage, legacy auth, SSO)	3	24
+4	Identify account issues (orphaned, duplicate, terminated-active, stale)	10	80
+5	Identify excessive/standing privilege & risky agent permissions	10	80
+6	Consolidate & prioritize into a single Gap Register (risk & criticality)	4	24
+	Subtotal	35	272
+5. Remediation			
+1	Onboard unmanaged accounts into SailPoint	0	0
+2	Vault privileged accounts into Delinea	10	80
+3	Enforce MFA & Conditional Access (staged); disable legacy auth	5	40
+4	Clean up accounts (disable terminated/orphaned, fix data, resolve duplicates)	5	40
+5	Right-size privileged & agent permissions (least privilege / JIT)	10	80
+6	Convert accounts (unmanaged→managed, type changes)	5	40
+7	Enable / tune Native Change Detection (Delinea)	5	40
+	Subtotal	40	320
+6. Access reviews & certification			
+1	Assess current certification & review coverage vs policy	10	80
+2	Design the review model & campaigns (risk-based)	5	40
+3	Define access outlier logic (peer group, rare entitlements, SoD combos)	10	80
+4	Run user certification + privileged access review + outlier analysis	20	160
+5	Write the Access Review & Certification Policy	5	40
+	Subtotal	50	400
+7. JML & access processes			
+1	Map current JML, access request & provisioning/deprovisioning flows	10	80
+2	Identify gaps (leaver lag, orphaned, manual steps, missing approvals, SoD)	15	120
+3	Fix gaps (automate joiner/mover, timely leaver deprovisioning; tighten approvals)	15	120
+4	Validate request → provision → deprovision end-to-end	20	160
+5	Set up recurring certification campaigns	10	80
+6	Write the Joiner-Mover-Leaver & Access Request Policy	5	40
+	Subtotal	75	600
+8. Policies & standards			
+1	Consolidate all standards/policies drafted across the program	5	40
+2	Design & apply Enhanced Managed Access Policies (SoD, birthright, approvals)	10	40
+3	Review & approval by Security Governance	5	40
+4	Publish & communicate the policies	5	40
+	Subtotal	25	160
+	GRAND TOTAL	308	2416
