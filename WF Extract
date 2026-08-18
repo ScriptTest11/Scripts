@@ -1,0 +1,136 @@
+$domain       = ""
+$tenant       = ""
+$clientId     = ""
+$clientSecret = ""
+
+$IdentityAttributes = @('home')
+$AccountAttributes  = @('HOME')
+
+$outputFile = "C:\Temp\Workflow_Attribute_Matches.xlsx"
+$logFile    = "C:\Temp\Workflow_Attribute_Scan.log"
+
+$PageSize   = 250
+$ThrottleMs = 150
+
+function Write-Log {
+    param([string]$Message)
+    $line = "{0}  {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Message
+    Add-Content -Path $logFile -Value $line
+    Write-Host $line
+}
+
+$IdentityAttributes = @($IdentityAttributes | Where-Object { $_ })
+$AccountAttributes  = @($AccountAttributes  | Where-Object { $_ })
+
+if ($IdentityAttributes.Count -eq 0 -and $AccountAttributes.Count -eq 0) {
+    throw "Add at least one value to `$IdentityAttributes or `$AccountAttributes."
+}
+
+$apiRoot  = "https://$tenant.api.$domain.com"
+$tokenUrl = "$apiRoot/oauth/token"
+$v3       = "$apiRoot/v3"
+
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+$formData = @{
+    grant_type    = "client_credentials"
+    client_id     = $clientId
+    client_secret = $clientSecret
+}
+
+try {
+    $tokenResponse = Invoke-RestMethod -Method Post -Uri $tokenUrl -Body $formData `
+        -ContentType "application/x-www-form-urlencoded"
+    if (-not $tokenResponse.access_token) { throw "Failed to retrieve access token." }
+    $accessToken = $tokenResponse.access_token
+    Write-Log "Authentication successful"
+}
+catch {
+    Write-Log "Auth failed: $($_.Exception.Message)"
+    return
+}
+
+$headers = @{ Authorization = "Bearer $accessToken"; Accept = "application/json" }
+
+$workflows = @()
+$seen      = @{}
+$offset    = 0
+while ($true) {
+    $page = @(Invoke-RestMethod -Method Get -Headers $headers `
+        -Uri "$v3/workflows?limit=$PageSize&offset=$offset")
+    if ($page.Count -eq 0) { break }
+    $new = 0
+    foreach ($p in $page) {
+        if (-not $seen.ContainsKey($p.id)) {
+            $seen[$p.id] = $true
+            $workflows += $p
+            $new++
+        }
+    }
+    if ($new -eq 0) { break }
+    if ($page.Count -lt $PageSize) { break }
+    $offset += $PageSize
+}
+Write-Log "Total workflows: $($workflows.Count)"
+
+$rules = @()
+foreach ($n in $IdentityAttributes) {
+    $e = [regex]::Escape($n)
+    $rules += [pscustomobject]@{ Attribute = $n; Regex = "attributes\.$e\b" }
+    $rules += [pscustomobject]@{ Attribute = $n; Regex = "@\.attribute\s*==\s*['`"]$e['`"]" }
+}
+foreach ($n in $AccountAttributes) {
+    $e = [regex]::Escape($n)
+    $rules += [pscustomobject]@{ Attribute = $n; Regex = "@\.$e\b" }
+}
+
+$matches = foreach ($wf in $workflows) {
+    Write-Log "Processing: $($wf.name) ($($wf.id))"
+
+    $full = $wf
+    if (-not $wf.definition) {
+        try   { $full = Invoke-RestMethod -Method Get -Headers $headers -Uri "$v3/workflows/$($wf.id)" }
+        catch { Write-Log "Skipped '$($wf.name)': $($_.Exception.Message)"; continue }
+        if ($ThrottleMs) { Start-Sleep -Milliseconds $ThrottleMs }
+    }
+
+    $json = $full | ConvertTo-Json -Depth 100
+
+    $matchedAttrs = New-Object System.Collections.Generic.List[string]
+    foreach ($r in $rules) {
+        if (($json -cmatch $r.Regex) -and (-not $matchedAttrs.Contains($r.Attribute))) {
+            $matchedAttrs.Add($r.Attribute)
+        }
+    }
+
+    if ($matchedAttrs.Count -gt 0) {
+        $joined = $matchedAttrs -join ", "
+        Write-Log "MATCH: $($full.name) ($($full.id)) -> $joined"
+        [PSCustomObject]@{
+            WorkflowName      = $full.name
+            WorkflowId        = $full.id
+            MatchedAttributes = $joined
+        }
+    }
+}
+
+if (-not $matches) {
+    Write-Log "No workflows reference those attributes."
+    return
+}
+
+$matches = $matches | Sort-Object WorkflowName
+
+if (Get-Module -ListAvailable -Name ImportExcel) {
+    $matches | Export-Excel `
+        -Path $outputFile `
+        -WorksheetName "Workflows" `
+        -AutoSize -FreezeTopRow -BoldTopRow -ClearSheet
+    Write-Log "Export complete: $outputFile"
+}
+else {
+    $csv = [System.IO.Path]::ChangeExtension($outputFile, ".csv")
+    $matches | Export-Csv -Path $csv -NoTypeInformation
+    Write-Log "ImportExcel not installed; wrote CSV instead: $csv"
+}
+Write-Log "Workflows matched: $($matches.Count)"
