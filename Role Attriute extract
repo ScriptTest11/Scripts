@@ -1,0 +1,160 @@
+$domain       = ""
+$tenant       = ""
+$clientId     = ""
+$clientSecret = ""
+
+$IdentityAttributes = @('home')
+$AccountAttributes  = @('HOME')
+
+$outputFile = "C:\Temp\Role_Attribute_Matches.xlsx"
+$logFile    = "C:\Temp\Role_Attribute_Scan.log"
+
+$PageSize = 50
+
+function Write-Log {
+    param([string]$Message)
+    $line = "{0}  {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Message
+    Add-Content -Path $logFile -Value $line
+    Write-Host $line
+}
+
+function Get-Prop {
+    param($Node, [string]$Name)
+    if ($null -eq $Node) { return $null }
+    if ($Node -is [System.Collections.IDictionary]) {
+        if ($Node.ContainsKey($Name)) { return $Node[$Name] }
+        return $null
+    }
+    $p = $Node.PSObject.Properties[$Name]
+    if ($p) { return $p.Value }
+    return $null
+}
+
+function Walk-Criteria {
+    param($Node, $Acct, $Ident)
+    if ($null -eq $Node) { return }
+    if ($Node -is [string] -or $Node -is [ValueType]) { return }
+
+    $key = Get-Prop $Node 'key'
+    if ($key) {
+        $keyType = [string](Get-Prop $key 'type')
+        $prop    = [string](Get-Prop $key 'property')
+        if ($prop) {
+            $attrName = $prop -replace '^attribute\.', ''
+            if ($keyType -eq 'IDENTITY') { [void]$Ident.Add($attrName) }
+            elseif ($keyType -eq 'ACCOUNT') { [void]$Acct.Add($attrName) }
+        }
+    }
+
+    $children = Get-Prop $Node 'children'
+    if ($children) {
+        foreach ($c in $children) { Walk-Criteria $c $Acct $Ident }
+    }
+}
+
+$IdentityAttributes = @($IdentityAttributes | Where-Object { $_ })
+$AccountAttributes  = @($AccountAttributes  | Where-Object { $_ })
+
+if ($IdentityAttributes.Count -eq 0 -and $AccountAttributes.Count -eq 0) {
+    throw "Add at least one value to `$IdentityAttributes or `$AccountAttributes."
+}
+
+Add-Type -AssemblyName System.Web.Extensions
+$jss = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+$jss.MaxJsonLength = [int]::MaxValue
+
+$apiRoot  = "https://$tenant.api.$domain.com"
+$tokenUrl = "$apiRoot/oauth/token"
+$v3       = "$apiRoot/v3"
+
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+$formData = @{
+    grant_type    = "client_credentials"
+    client_id     = $clientId
+    client_secret = $clientSecret
+}
+
+try {
+    $tokenResponse = Invoke-RestMethod -Method Post -Uri $tokenUrl -Body $formData `
+        -ContentType "application/x-www-form-urlencoded"
+    if (-not $tokenResponse.access_token) { throw "Failed to retrieve access token." }
+    $accessToken = $tokenResponse.access_token
+    Write-Log "Authentication successful"
+}
+catch {
+    Write-Log "Auth failed: $($_.Exception.Message)"
+    return
+}
+
+$headers = @{ Authorization = "Bearer $accessToken"; Accept = "application/json" }
+
+$roles  = @()
+$offset = 0
+$total  = $null
+do {
+    $resp = Invoke-WebRequest -Method Get -Headers $headers -UseBasicParsing `
+        -Uri "$v3/roles?count=true&limit=$PageSize&offset=$offset"
+    if ($null -eq $total) {
+        $total = @($resp.Headers['X-Total-Count'])[0]
+        if ($total) { Write-Log "Total roles: $total" }
+    }
+    $page = @($jss.DeserializeObject($resp.Content))
+    $roles += $page
+    $offset += $PageSize
+} while ($page.Count -eq $PageSize)
+Write-Log "Roles retrieved: $($roles.Count)"
+
+$matches = foreach ($r in $roles) {
+    $rName = [string](Get-Prop $r 'name')
+    $rId   = [string](Get-Prop $r 'id')
+
+    Write-Log "Processing: $rName ($rId)"
+
+    $membership = Get-Prop $r 'membership'
+    $criteria   = if ($membership) { Get-Prop $membership 'criteria' } else { $null }
+    if (-not $criteria) { continue }
+
+    $acct  = New-Object System.Collections.Generic.List[string]
+    $ident = New-Object System.Collections.Generic.List[string]
+    Walk-Criteria -Node $criteria -Acct $acct -Ident $ident
+
+    $matchedAttrs = New-Object System.Collections.Generic.List[string]
+    foreach ($n in $AccountAttributes) {
+        if (($acct -ccontains $n) -and (-not $matchedAttrs.Contains($n))) { $matchedAttrs.Add($n) }
+    }
+    foreach ($n in $IdentityAttributes) {
+        if (($ident -ccontains $n) -and (-not $matchedAttrs.Contains($n))) { $matchedAttrs.Add($n) }
+    }
+
+    if ($matchedAttrs.Count -gt 0) {
+        $joined = $matchedAttrs -join ", "
+        Write-Log "MATCH: $rName ($rId) -> $joined"
+        [PSCustomObject]@{
+            RoleName          = $rName
+            RoleId            = $rId
+            MatchedAttributes = $joined
+        }
+    }
+}
+
+if (-not $matches) {
+    Write-Log "No roles reference those attributes."
+    return
+}
+
+$matches = $matches | Sort-Object RoleName
+
+if (Get-Module -ListAvailable -Name ImportExcel) {
+    $matches | Export-Excel `
+        -Path $outputFile `
+        -WorksheetName "Roles" `
+        -AutoSize -FreezeTopRow -BoldTopRow -ClearSheet
+    Write-Log "Export complete: $outputFile"
+}
+else {
+    $csv = [System.IO.Path]::ChangeExtension($outputFile, ".csv")
+    $matches | Export-Csv -Path $csv -NoTypeInformation
+    Write-Log "ImportExcel not installed; wrote CSV instead: $csv"
+}
+Write-Log "Roles matched: $($matches.Count)"
