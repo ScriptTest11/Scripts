@@ -1,0 +1,184 @@
+$domain       = ""
+$tenant       = ""
+$clientId     = ""
+$clientSecret = ""
+
+$IdentityAttributes = @('home')
+$AccountAttributes  = @('HOME')
+
+$outputFile = "C:\Temp\CreatePolicy_Attribute_Matches.xlsx"
+$logFile    = "C:\Temp\CreatePolicy_Attribute_Scan.log"
+
+$PageSize   = 250
+$ThrottleMs = 150
+
+function Write-Log {
+    param([string]$Message)
+    $line = "{0}  {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Message
+    Add-Content -Path $logFile -Value $line
+    Write-Host $line
+}
+
+function Get-Prop {
+    param($Node, [string]$Name)
+    if ($null -eq $Node) { return $null }
+    if ($Node -is [System.Collections.IDictionary]) {
+        if ($Node.ContainsKey($Name)) { return $Node[$Name] }
+        return $null
+    }
+    $p = $Node.PSObject.Properties[$Name]
+    if ($p) { return $p.Value }
+    return $null
+}
+
+function Walk-Node {
+    param($Node, $Acct, $Ident)
+    if ($null -eq $Node) { return }
+    if ($Node -is [string] -or $Node -is [ValueType]) { return }
+
+    $type  = Get-Prop $Node 'type'
+    $attrs = Get-Prop $Node 'attributes'
+    if ($type -eq 'accountAttribute' -and $attrs) {
+        $an = Get-Prop $attrs 'attributeName'
+        if ($an) { [void]$Acct.Add([string]$an) }
+    }
+    elseif ($type -eq 'identityAttribute' -and $attrs) {
+        $nm = Get-Prop $attrs 'name'
+        if ($nm) { [void]$Ident.Add([string]$nm) }
+    }
+
+    if ($Node -is [System.Collections.IDictionary]) {
+        foreach ($v in $Node.Values) { Walk-Node $v $Acct $Ident }
+        return
+    }
+    if ($Node -is [System.Collections.IEnumerable]) {
+        foreach ($item in $Node) { Walk-Node $item $Acct $Ident }
+        return
+    }
+    foreach ($p in $Node.PSObject.Properties) { Walk-Node $p.Value $Acct $Ident }
+}
+
+$IdentityAttributes = @($IdentityAttributes | Where-Object { $_ })
+$AccountAttributes  = @($AccountAttributes  | Where-Object { $_ })
+
+if ($IdentityAttributes.Count -eq 0 -and $AccountAttributes.Count -eq 0) {
+    throw "Add at least one value to `$IdentityAttributes or `$AccountAttributes."
+}
+
+Add-Type -AssemblyName System.Web.Extensions
+$jss = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+$jss.MaxJsonLength = [int]::MaxValue
+
+$apiRoot  = "https://$tenant.api.$domain.com"
+$tokenUrl = "$apiRoot/oauth/token"
+$v3       = "$apiRoot/v3"
+
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+$formData = @{
+    grant_type    = "client_credentials"
+    client_id     = $clientId
+    client_secret = $clientSecret
+}
+
+try {
+    $tokenResponse = Invoke-RestMethod -Method Post -Uri $tokenUrl -Body $formData `
+        -ContentType "application/x-www-form-urlencoded"
+    if (-not $tokenResponse.access_token) { throw "Failed to retrieve access token." }
+    $accessToken = $tokenResponse.access_token
+    Write-Log "Authentication successful"
+}
+catch {
+    Write-Log "Auth failed: $($_.Exception.Message)"
+    return
+}
+
+$headers = @{ Authorization = "Bearer $accessToken"; Accept = "application/json" }
+
+$sources = @()
+$offset  = 0
+$total   = $null
+do {
+    $resp = Invoke-WebRequest -Method Get -Headers $headers -UseBasicParsing `
+        -Uri "$v3/sources?count=true&limit=$PageSize&offset=$offset"
+    if ($null -eq $total) {
+        $total = @($resp.Headers['X-Total-Count'])[0]
+        if ($total) { Write-Log "Total sources: $total" }
+    }
+    $page = @($jss.DeserializeObject($resp.Content))
+    $sources += $page
+    $offset += $PageSize
+} while ($page.Count -eq $PageSize)
+Write-Log "Sources retrieved: $($sources.Count)"
+
+$matches = foreach ($s in $sources) {
+    $sName = [string](Get-Prop $s 'name')
+    $sId   = [string](Get-Prop $s 'id')
+
+    Write-Log "Processing source: $sName ($sId)"
+
+    try {
+        $ppResp   = Invoke-WebRequest -Method Get -Headers $headers -UseBasicParsing `
+            -Uri "$v3/sources/$sId/provisioning-policies"
+        $policies = @($jss.DeserializeObject($ppResp.Content))
+    }
+    catch {
+        Write-Log "Skipped source '$sName': $($_.Exception.Message)"
+        continue
+    }
+
+    foreach ($pp in $policies) {
+        $usage = [string](Get-Prop $pp 'usageType')
+        if ($usage -ne 'CREATE') { continue }
+
+        $ppName = [string](Get-Prop $pp 'name')
+        Write-Log "  Checking CREATE policy: $ppName"
+
+        $acct  = New-Object System.Collections.Generic.List[string]
+        $ident = New-Object System.Collections.Generic.List[string]
+        Walk-Node -Node $pp -Acct $acct -Ident $ident
+
+        $matchedAttrs = New-Object System.Collections.Generic.List[string]
+        foreach ($n in $AccountAttributes) {
+            if (($acct -ccontains $n) -and (-not $matchedAttrs.Contains($n))) { $matchedAttrs.Add($n) }
+        }
+        foreach ($n in $IdentityAttributes) {
+            if (($ident -ccontains $n) -and (-not $matchedAttrs.Contains($n))) { $matchedAttrs.Add($n) }
+        }
+
+        if ($matchedAttrs.Count -gt 0) {
+            $joined = $matchedAttrs -join ", "
+            Write-Log "MATCH: $sName / $ppName ($sId) -> $joined"
+            [PSCustomObject]@{
+                SourceName        = $sName
+                SourceId          = $sId
+                PolicyName        = $ppName
+                UsageType         = $usage
+                MatchedAttributes = $joined
+            }
+        }
+    }
+
+    if ($ThrottleMs) { Start-Sleep -Milliseconds $ThrottleMs }
+}
+
+if (-not $matches) {
+    Write-Log "No CREATE provisioning policies reference those attributes."
+    return
+}
+
+$matches = $matches | Sort-Object SourceName
+
+if (Get-Module -ListAvailable -Name ImportExcel) {
+    $matches | Export-Excel `
+        -Path $outputFile `
+        -WorksheetName "CreatePolicies" `
+        -AutoSize -FreezeTopRow -BoldTopRow -ClearSheet
+    Write-Log "Export complete: $outputFile"
+}
+else {
+    $csv = [System.IO.Path]::ChangeExtension($outputFile, ".csv")
+    $matches | Export-Csv -Path $csv -NoTypeInformation
+    Write-Log "ImportExcel not installed; wrote CSV instead: $csv"
+}
+Write-Log "Policies matched: $($matches.Count)"
