@@ -18,29 +18,43 @@ function Write-Log {
     Write-Host $line
 }
 
+function Get-Prop {
+    param($Node, [string]$Name)
+    if ($null -eq $Node) { return $null }
+    if ($Node -is [System.Collections.IDictionary]) {
+        if ($Node.Contains($Name)) { return $Node[$Name] }
+        return $null
+    }
+    $p = $Node.PSObject.Properties[$Name]
+    if ($p) { return $p.Value }
+    return $null
+}
+
 function Walk-Node {
     param($Node, $Acct, $Ident)
     if ($null -eq $Node) { return }
     if ($Node -is [string] -or $Node -is [ValueType]) { return }
+
+    $type  = Get-Prop $Node 'type'
+    $attrs = Get-Prop $Node 'attributes'
+    if ($type -eq 'accountAttribute' -and $attrs) {
+        $an = Get-Prop $attrs 'attributeName'
+        if ($an) { [void]$Acct.Add([string]$an) }
+    }
+    elseif ($type -eq 'identityAttribute' -and $attrs) {
+        $nm = Get-Prop $attrs 'name'
+        if ($nm) { [void]$Ident.Add([string]$nm) }
+    }
+
     if ($Node -is [System.Collections.IDictionary]) {
-        foreach ($k in $Node.Keys) { Walk-Node $Node[$k] $Acct $Ident }
+        foreach ($v in $Node.Values) { Walk-Node $v $Acct $Ident }
         return
     }
     if ($Node -is [System.Collections.IEnumerable]) {
         foreach ($item in $Node) { Walk-Node $item $Acct $Ident }
         return
     }
-    $props = $Node.PSObject.Properties
-    $type  = ($props | Where-Object Name -eq 'type').Value
-    if ($type -eq 'accountAttribute') {
-        $attrs = ($props | Where-Object Name -eq 'attributes').Value
-        if ($attrs -and $attrs.attributeName) { [void]$Acct.Add([string]$attrs.attributeName) }
-    }
-    elseif ($type -eq 'identityAttribute') {
-        $attrs = ($props | Where-Object Name -eq 'attributes').Value
-        if ($attrs -and $attrs.name) { [void]$Ident.Add([string]$attrs.name) }
-    }
-    foreach ($p in $props) { Walk-Node $p.Value $Acct $Ident }
+    foreach ($p in $Node.PSObject.Properties) { Walk-Node $p.Value $Acct $Ident }
 }
 
 $IdentityAttributes = @($IdentityAttributes | Where-Object { $_ })
@@ -49,6 +63,10 @@ $AccountAttributes  = @($AccountAttributes  | Where-Object { $_ })
 if ($IdentityAttributes.Count -eq 0 -and $AccountAttributes.Count -eq 0) {
     throw "Add at least one value to `$IdentityAttributes or `$AccountAttributes."
 }
+
+Add-Type -AssemblyName System.Web.Extensions
+$jss = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+$jss.MaxJsonLength = [int]::MaxValue
 
 $apiRoot  = "https://$tenant.api.$domain.com"
 $tokenUrl = "$apiRoot/oauth/token"
@@ -86,14 +104,18 @@ do {
         $total = @($resp.Headers['X-Total-Count'])[0]
         if ($total) { Write-Log "Total transforms: $total" }
     }
-    $page = @($resp.Content | ConvertFrom-Json)
+    $page = @($jss.DeserializeObject($resp.Content))
     $transforms += $page
     $offset += $PageSize
 } while ($page.Count -eq $PageSize)
 Write-Log "Transforms retrieved: $($transforms.Count)"
 
 $matches = foreach ($t in $transforms) {
-    Write-Log "Processing: $($t.name) ($($t.id))"
+    $tName = [string](Get-Prop $t 'name')
+    $tId   = [string](Get-Prop $t 'id')
+    $tType = [string](Get-Prop $t 'type')
+
+    Write-Log "Processing: $tName ($tId)"
 
     $acct  = New-Object System.Collections.Generic.List[string]
     $ident = New-Object System.Collections.Generic.List[string]
@@ -109,11 +131,11 @@ $matches = foreach ($t in $transforms) {
 
     if ($matchedAttrs.Count -gt 0) {
         $joined = $matchedAttrs -join ", "
-        Write-Log "MATCH: $($t.name) ($($t.id)) -> $joined"
+        Write-Log "MATCH: $tName ($tId) -> $joined"
         [PSCustomObject]@{
-            TransformName     = $t.name
-            TransformId       = $t.id
-            TransformType     = $t.type
+            TransformName     = $tName
+            TransformId       = $tId
+            TransformType     = $tType
             MatchedAttributes = $joined
         }
     }
