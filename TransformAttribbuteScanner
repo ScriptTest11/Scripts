@@ -1,0 +1,141 @@
+$domain       = ""
+$tenant       = ""
+$clientId     = ""
+$clientSecret = ""
+
+$IdentityAttributes = @('home')
+$AccountAttributes  = @('HOME')
+
+$outputFile = "C:\Temp\Transform_Attribute_Matches.xlsx"
+$logFile    = "C:\Temp\Transform_Attribute_Scan.log"
+
+$PageSize = 250
+
+function Write-Log {
+    param([string]$Message)
+    $line = "{0}  {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Message
+    Add-Content -Path $logFile -Value $line
+    Write-Host $line
+}
+
+function Walk-Node {
+    param($Node, $Acct, $Ident)
+    if ($null -eq $Node) { return }
+    if ($Node -is [string] -or $Node -is [ValueType]) { return }
+    if ($Node -is [System.Collections.IDictionary]) {
+        foreach ($k in $Node.Keys) { Walk-Node $Node[$k] $Acct $Ident }
+        return
+    }
+    if ($Node -is [System.Collections.IEnumerable]) {
+        foreach ($item in $Node) { Walk-Node $item $Acct $Ident }
+        return
+    }
+    $props = $Node.PSObject.Properties
+    $type  = ($props | Where-Object Name -eq 'type').Value
+    if ($type -eq 'accountAttribute') {
+        $attrs = ($props | Where-Object Name -eq 'attributes').Value
+        if ($attrs -and $attrs.attributeName) { [void]$Acct.Add([string]$attrs.attributeName) }
+    }
+    elseif ($type -eq 'identityAttribute') {
+        $attrs = ($props | Where-Object Name -eq 'attributes').Value
+        if ($attrs -and $attrs.name) { [void]$Ident.Add([string]$attrs.name) }
+    }
+    foreach ($p in $props) { Walk-Node $p.Value $Acct $Ident }
+}
+
+$IdentityAttributes = @($IdentityAttributes | Where-Object { $_ })
+$AccountAttributes  = @($AccountAttributes  | Where-Object { $_ })
+
+if ($IdentityAttributes.Count -eq 0 -and $AccountAttributes.Count -eq 0) {
+    throw "Add at least one value to `$IdentityAttributes or `$AccountAttributes."
+}
+
+$apiRoot  = "https://$tenant.api.$domain.com"
+$tokenUrl = "$apiRoot/oauth/token"
+$v3       = "$apiRoot/v3"
+
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+$formData = @{
+    grant_type    = "client_credentials"
+    client_id     = $clientId
+    client_secret = $clientSecret
+}
+
+try {
+    $tokenResponse = Invoke-RestMethod -Method Post -Uri $tokenUrl -Body $formData `
+        -ContentType "application/x-www-form-urlencoded"
+    if (-not $tokenResponse.access_token) { throw "Failed to retrieve access token." }
+    $accessToken = $tokenResponse.access_token
+    Write-Log "Authentication successful"
+}
+catch {
+    Write-Log "Auth failed: $($_.Exception.Message)"
+    return
+}
+
+$headers = @{ Authorization = "Bearer $accessToken"; Accept = "application/json" }
+
+$transforms = @()
+$offset     = 0
+$total      = $null
+do {
+    $resp = Invoke-WebRequest -Method Get -Headers $headers -UseBasicParsing `
+        -Uri "$v3/transforms?count=true&limit=$PageSize&offset=$offset"
+    if ($null -eq $total) {
+        $total = @($resp.Headers['X-Total-Count'])[0]
+        if ($total) { Write-Log "Total transforms: $total" }
+    }
+    $page = @($resp.Content | ConvertFrom-Json)
+    $transforms += $page
+    $offset += $PageSize
+} while ($page.Count -eq $PageSize)
+Write-Log "Transforms retrieved: $($transforms.Count)"
+
+$matches = foreach ($t in $transforms) {
+    Write-Log "Processing: $($t.name) ($($t.id))"
+
+    $acct  = New-Object System.Collections.Generic.List[string]
+    $ident = New-Object System.Collections.Generic.List[string]
+    Walk-Node -Node $t -Acct $acct -Ident $ident
+
+    $matchedAttrs = New-Object System.Collections.Generic.List[string]
+    foreach ($n in $AccountAttributes) {
+        if (($acct -ccontains $n) -and (-not $matchedAttrs.Contains($n))) { $matchedAttrs.Add($n) }
+    }
+    foreach ($n in $IdentityAttributes) {
+        if (($ident -ccontains $n) -and (-not $matchedAttrs.Contains($n))) { $matchedAttrs.Add($n) }
+    }
+
+    if ($matchedAttrs.Count -gt 0) {
+        $joined = $matchedAttrs -join ", "
+        Write-Log "MATCH: $($t.name) ($($t.id)) -> $joined"
+        [PSCustomObject]@{
+            TransformName     = $t.name
+            TransformId       = $t.id
+            TransformType     = $t.type
+            MatchedAttributes = $joined
+        }
+    }
+}
+
+if (-not $matches) {
+    Write-Log "No transforms reference those attributes."
+    return
+}
+
+$matches = $matches | Sort-Object TransformName
+
+if (Get-Module -ListAvailable -Name ImportExcel) {
+    $matches | Export-Excel `
+        -Path $outputFile `
+        -WorksheetName "Transforms" `
+        -AutoSize -FreezeTopRow -BoldTopRow -ClearSheet
+    Write-Log "Export complete: $outputFile"
+}
+else {
+    $csv = [System.IO.Path]::ChangeExtension($outputFile, ".csv")
+    $matches | Export-Csv -Path $csv -NoTypeInformation
+    Write-Log "ImportExcel not installed; wrote CSV instead: $csv"
+}
+Write-Log "Transforms matched: $($matches.Count)"
