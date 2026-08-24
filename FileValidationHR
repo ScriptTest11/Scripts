@@ -1,0 +1,172 @@
+$InputFile        = "C:\Data\input.csv"
+$OutputFile       = "C:\Data\input_validated.csv"
+$LogFile          = "C:\Data\validation_log.txt"
+$ExpectedHeaders  = @("employee_id2", "supervisor_id2", "Name", "Start_Date", "Termination_Date", "Amount", "Status")
+$DateColumns      = @("Start_Date", "Termination_Date")
+$DateFormat       = "M/d/yyyy"
+$MandatoryColumns = @("employee_id2", "Name", "Start_Date", "Amount")
+$DuplicateColumns = @("employee_id2")
+$PrehireWindowDays = 14
+$HireWindowDays    = 3
+
+function Write-Log {
+    param([string]$Message)
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    Add-Content -Path $LogFile -Value "$timestamp  $Message"
+}
+
+Write-Log "===== Validation started ====="
+Write-Log "Input file: $InputFile"
+
+if (-not (Test-Path $InputFile)) {
+    Write-Log "ERROR: File not found: $InputFile"
+    Write-Error "File not found: $InputFile"
+    exit 1
+}
+$data = Import-Csv -Path $InputFile
+Write-Log "Loaded $($data.Count) rows"
+
+$actualHeaders  = $data[0].PSObject.Properties.Name
+$missingHeaders = $ExpectedHeaders | Where-Object { $_ -notin $actualHeaders }
+$extraHeaders   = $actualHeaders   | Where-Object { $_ -notin $ExpectedHeaders }
+
+if ($missingHeaders) {
+    Write-Log "ERROR: Missing headers: $($missingHeaders -join ', ')"
+    Write-Log "===== Validation aborted ====="
+    exit 1
+}
+if ($extraHeaders) {
+    Write-Log "WARNING: Extra headers: $($extraHeaders -join ', ')"
+}
+Write-Log "Header check passed"
+
+function Test-NotEmpty {
+    param([string]$Value)
+    return -not [string]::IsNullOrWhiteSpace($Value)
+}
+
+function Get-ParsedDate {
+    param([string]$Value, [string]$Format)
+    $parsed = [datetime]::MinValue
+    $ok = [datetime]::TryParseExact(
+        "$Value".Trim(),
+        $Format,
+        [System.Globalization.CultureInfo]::InvariantCulture,
+        [System.Globalization.DateTimeStyles]::None,
+        [ref]$parsed
+    )
+    if ($ok) { return $parsed } else { return $null }
+}
+
+function Get-LCS {
+    param($Row, [datetime]$Today, [string]$Format, [int]$PrehireDays, [int]$HireDays)
+    $start = Get-ParsedDate -Value $Row.Start_Date -Format $Format
+    $term  = Get-ParsedDate -Value $Row.Termination_Date -Format $Format
+    $status = "$($Row.Status)".Trim().ToUpper()
+
+    if ($null -eq $start) { return "" }
+
+    if ($null -ne $term -and $term -gt $start -and $status -eq "N") {
+        return "Terminated"
+    }
+    $daysUntilStart = ($start - $Today).Days
+    if ($daysUntilStart -gt $PrehireDays) {
+        if ($status -eq "S") { return "Prehire" }
+        return ""
+    }
+    if ($daysUntilStart -ge (-1 * $HireDays)) {
+        return "Hire"
+    }
+    return "Active"
+}
+
+$duplicateSets = @{}
+foreach ($col in $DuplicateColumns) {
+    $counts = @{}
+    foreach ($row in $data) {
+        $val = "$($row.$col)".Trim()
+        if (Test-NotEmpty -Value $val) {
+            if ($counts.ContainsKey($val)) { $counts[$val]++ } else { $counts[$val] = 1 }
+        }
+    }
+    $dups = @($counts.Keys | Where-Object { $counts[$_] -gt 1 })
+    $duplicateSets[$col] = $dups
+    if ($dups.Count -gt 0) {
+        Write-Log "WARNING: Duplicate $col value(s): $($dups -join ', ')"
+    }
+}
+
+$today = (Get-Date).Date
+
+foreach ($row in $data) {
+    foreach ($col in $MandatoryColumns) {
+        $isFilled = Test-NotEmpty -Value $row.$col
+        $row | Add-Member -NotePropertyName "Valid_Mandatory_$col" -NotePropertyValue $isFilled
+    }
+
+    foreach ($col in $DateColumns) {
+        if (Test-NotEmpty -Value $row.$col) {
+            $isValid = ($null -ne (Get-ParsedDate -Value $row.$col -Format $DateFormat))
+        }
+        elseif ($col -in $MandatoryColumns) {
+            $isValid = $false
+        }
+        else {
+            $isValid = $true
+        }
+        $row | Add-Member -NotePropertyName "Valid_$col" -NotePropertyValue $isValid
+    }
+
+    foreach ($col in $DuplicateColumns) {
+        $val = "$($row.$col)".Trim()
+        $isDuplicate = $val -in $duplicateSets[$col]
+        $row | Add-Member -NotePropertyName "Duplicate$col" -NotePropertyValue $isDuplicate
+    }
+
+    $lcs = Get-LCS -Row $row -Today $today -Format $DateFormat -PrehireDays $PrehireWindowDays -HireDays $HireWindowDays
+    $row | Add-Member -NotePropertyName "LCS" -NotePropertyValue $lcs
+}
+
+$lcsById = @{}
+foreach ($row in $data) {
+    $id = "$($row.employee_id2)".Trim()
+    if (-not [string]::IsNullOrWhiteSpace($id) -and -not $lcsById.ContainsKey($id)) {
+        $lcsById[$id] = $row.LCS
+    }
+}
+
+foreach ($row in $data) {
+    $supId = "$($row.supervisor_id2)".Trim()
+    if ($row.LCS -ne "Active") {
+        $activeSup = ""
+    }
+    elseif ([string]::IsNullOrWhiteSpace($supId)) {
+        $activeSup = $false
+    }
+    elseif ($lcsById.ContainsKey($supId)) {
+        $activeSup = ($lcsById[$supId] -eq "Active")
+    }
+    else {
+        Write-Log "WARNING: supervisor_id2 '$supId' (row employee_id2=$($row.employee_id2)) not found in file"
+        $activeSup = $false
+    }
+    $row | Add-Member -NotePropertyName "Active_Supervisor" -NotePropertyValue $activeSup
+}
+
+$data | Export-Csv -Path $OutputFile -NoTypeInformation
+
+$checkCols = @($MandatoryColumns | ForEach-Object { "Valid_Mandatory_$_" }) +
+             @($DateColumns      | ForEach-Object { "Valid_$_" })
+$badRows = @($data | Where-Object {
+    $r = $_
+    (($checkCols | Where-Object { $r.$_ -eq $false }).Count -gt 0) -or
+    (($DuplicateColumns | Where-Object { $r."Duplicate$_" -eq $true }).Count -gt 0)
+})
+
+Write-Log "Validation complete: $($badRows.Count) row(s) with issues out of $($data.Count)"
+Write-Log "Output saved to: $OutputFile"
+Write-Log "===== Validation finished ====="
+
+Write-Host "Done. $($badRows.Count) row(s) with issues out of $($data.Count) rows."
+Write-Host "Output: $OutputFile"
+Write-Host "Log:    $LogFile"
